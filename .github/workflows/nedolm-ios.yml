@@ -56,17 +56,12 @@ jobs:
           git apply --check "$GITHUB_WORKSPACE/runtime/nedolm-llama.patch"
           git apply "$GITHUB_WORKSPACE/runtime/nedolm-llama.patch"
 
-          # The patch declares the NedoLM model; its implementation is stored as
-          # a separate runtime source and llama.cpp's CMakeLists glob picks it up.
           cp "$GITHUB_WORKSPACE/runtime/nedolm/nedolm.cpp" src/models/nedolm.cpp
 
-          # Stage the verified iPhone arm64 FFI where the patch expects it at
-          # CMake configure time, so LLAMA_NEDO004_FFI is compiled in.
           mkdir -p vendor/nedo004-ffi/target/release
           cp "$GITHUB_WORKSPACE/runtime/libnedo004_ffi.a" \
              vendor/nedo004-ffi/target/release/libnedo004_ffi.a
 
-          # iOS does not need the desktop dl/pthread/m linkage in this target.
           python3 - <<'PY'
           from pathlib import Path
           p = Path('src/CMakeLists.txt')
@@ -149,8 +144,6 @@ jobs:
           MODULE_SHA_BEFORE="$(shasum -a 256 "$DST_FW/Modules/module.modulemap" | awk '{print $1}')"
           INFO_SHA_BEFORE="$(shasum -a 256 "$DST_FW/Info.plist" | awk '{print $1}')"
 
-          # Preserve Silo's known-good XCFramework container, simulator slice,
-          # headers, modulemap and plist. Replace only the iPhone arm64 executable.
           cp "$SRC_FW/llama" "$DST_FW/llama"
           chmod +x "$DST_FW/llama"
 
@@ -164,6 +157,32 @@ jobs:
           file "$DST_FW/llama"
           lipo -info "$DST_FW/llama"
           otool -L "$DST_FW/llama"
+
+      - name: Repair pinned Silo whisper XCFramework debug-symbol paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import plistlib
+          from pathlib import Path
+
+          xc = Path('work/silo/whisper.xcframework')
+          info_path = xc / 'Info.plist'
+          info = plistlib.loads(info_path.read_bytes())
+          created = []
+          for lib in info.get('AvailableLibraries', []):
+              debug_path = lib.get('DebugSymbolsPath')
+              identifier = lib.get('LibraryIdentifier')
+              if not debug_path or not identifier:
+                  continue
+              path = xc / identifier / debug_path
+              path.mkdir(parents=True, exist_ok=True)
+              created.append(str(path))
+          if not created:
+              raise SystemExit('whisper.xcframework declares no DebugSymbolsPath entries')
+          print('Prepared declared whisper debug-symbol paths:')
+          print('\n'.join(created))
+          PY
 
       - name: Build unsigned Silo app for device
         id: silo_build

@@ -1,0 +1,111 @@
+name: Build NedoLM iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/nedolm-ios.yml"
+      - "scripts/**"
+      - "runtime/**"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout mercanApp-test1
+        uses: actions/checkout@v4
+
+      - name: Validate NedoLM runtime payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s runtime/nedolm-llama.patch || {
+            echo "::error::runtime/nedolm-llama.patch eksik"
+            exit 2
+          }
+          test -s runtime/libnedo004_ffi.a || {
+            echo "::error::runtime/libnedo004_ffi.a eksik"
+            exit 3
+          }
+
+      - name: Clone Silo
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/stevederico/silo.git work/silo
+          cd work/silo
+          git checkout 1be4fa9aad0ec72dbb6f40ac07d537ea16648944
+
+      - name: Clone and patch llama.cpp
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/ggml-org/llama.cpp.git work/llama.cpp
+          cd work/llama.cpp
+          git checkout e71b80510c848c00175924ecf3c40333ccae8eb5
+          git apply --check "$GITHUB_WORKSPACE/runtime/nedolm-llama.patch"
+          git apply "$GITHUB_WORKSPACE/runtime/nedolm-llama.patch"
+
+      - name: Build NedoLM llama framework for iPhone arm64
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/build-nedolm-llama-ios.sh
+          scripts/build-nedolm-llama-ios.sh \
+            "$GITHUB_WORKSPACE/work/llama.cpp" \
+            "$GITHUB_WORKSPACE/runtime/libnedo004_ffi.a" \
+            "$GITHUB_WORKSPACE/work/nedolm-llama.xcframework"
+
+      - name: Replace Silo llama.xcframework
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf work/silo/llama.xcframework
+          cp -R work/nedolm-llama.xcframework work/silo/llama.xcframework
+
+      - name: Build unsigned Silo app for device
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd work/silo
+          xcodebuild \
+            -project Silo.xcodeproj \
+            -scheme Silo \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$GITHUB_WORKSPACE/work/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            build
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$(find work/DerivedData/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$APP"
+          rm -rf work/Payload
+          mkdir -p work/Payload
+          cp -R "$APP" work/Payload/
+          (
+            cd work
+            /usr/bin/zip -qry NedoLM-Silo-unsigned.ipa Payload
+          )
+          shasum -a 256 work/NedoLM-Silo-unsigned.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: NedoLM-Silo-unsigned-IPA
+          path: work/NedoLM-Silo-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14

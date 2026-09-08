@@ -18,6 +18,7 @@ cmake -S "$LLAMA_DIR" -B "$BUILD" -G Xcode \
   -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_MIN" \
   -DCMAKE_XCODE_ATTRIBUTE_SUPPORTED_PLATFORMS=iphoneos \
   -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+  -DBUILD_SHARED_LIBS=OFF \
   -DGGML_METAL=ON \
   -DGGML_METAL_EMBED_LIBRARY=ON \
   -DLLAMA_BUILD_EXAMPLES=OFF \
@@ -26,7 +27,10 @@ cmake -S "$LLAMA_DIR" -B "$BUILD" -G Xcode \
   -DLLAMA_BUILD_SERVER=OFF \
   -DLLAMA_CURL=OFF
 
-cmake --build "$BUILD" --config Release -j "$(sysctl -n hw.logicalcpu)" -- CODE_SIGNING_ALLOWED=NO
+# Build only the library target and its dependencies. ALL_BUILD also includes
+# llama-app/common targets that are not part of the embedded iOS framework.
+cmake --build "$BUILD" --config Release --target llama \
+  -j "$(sysctl -n hw.logicalcpu)" -- CODE_SIGNING_ALLOWED=NO
 
 # macOS ships Bash 3.2, which has no mapfile/readarray.
 LLAMA_LIBS=()

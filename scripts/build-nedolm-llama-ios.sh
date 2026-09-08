@@ -62,7 +62,6 @@ for h in ggml.h ggml-alloc.h ggml-backend.h ggml-cpu.h ggml-metal.h ggml-blas.h 
   fi
 done
 
-# Match the Clang module contract used by Silo's pinned llama.xcframework.
 cat > "$FRAMEWORK/Modules/module.modulemap" <<'EOF'
 framework module llama {
     header "llama.h"
@@ -136,16 +135,11 @@ xcodebuild -create-xcframework \
   -framework "$FRAMEWORK" \
   -output "$OUT_XC"
 
-# Fail early if Swift cannot import the same module Silo imports.
-DEVICE_FRAMEWORK="$(find "$OUT_XC" -type d -name 'llama.framework' -print -quit)"
-test -n "$DEVICE_FRAMEWORK"
-cat > "$TMP/import-llama.swift" <<'EOF'
-import llama
-EOF
-xcrun swiftc \
-  -target "arm64-apple-ios${IOS_MIN}" \
-  -sdk "$SDK" \
-  -F "$(dirname "$DEVICE_FRAMEWORK")" \
-  -typecheck "$TMP/import-llama.swift"
+# This XCFramework is only an intermediate carrier for the NedoLM arm64 binary.
+# The workflow keeps Silo's pinned XCFramework container/module metadata intact
+# and swaps only its ios-arm64 framework executable.
+test -s "$OUT_XC/ios-arm64/llama.framework/llama"
+file "$OUT_XC/ios-arm64/llama.framework/llama"
+lipo -info "$OUT_XC/ios-arm64/llama.framework/llama"
 
-echo "Created and Swift-import verified: $OUT_XC"
+echo "Created NedoLM iPhone arm64 framework carrier: $OUT_XC"

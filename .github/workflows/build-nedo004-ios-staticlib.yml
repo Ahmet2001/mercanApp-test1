@@ -35,7 +35,7 @@ jobs:
             tmp/model
           cd tmp/model
           git lfs ls-files
-          VOCAB_PATH="$(git lfs ls-files -n | grep 'surface-vocab.bin' | head -n 1)"
+          VOCAB_PATH="$(git lfs ls-files -n | grep 'surface-vocab' | head -n 1)"
           test -n "$VOCAB_PATH"
           git lfs pull --include="$VOCAB_PATH" --exclude=""
           test -s "$VOCAB_PATH"

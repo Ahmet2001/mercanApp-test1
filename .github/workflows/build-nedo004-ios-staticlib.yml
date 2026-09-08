@@ -1,0 +1,55 @@
+name: Build Nedo004 iOS Staticlib
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-nedo004-ios-staticlib.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust iOS target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Checkout exact NedoTokenizer payload
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git lfs install
+          git clone https://huggingface.co/Ethosoft/NedoTokenizer runtime/NedoTokenizer
+          ACTUAL="$(shasum -a 256 runtime/NedoTokenizer/assets/surface-vocab.bin | awk '{print $1}')"
+          echo "NDSRF004 vocab SHA256: $ACTUAL"
+          test "$ACTUAL" = "72412d981dac65a29d1767bc98821fc2bcffc2de53c534e7c719598515bfb600"
+
+      - name: Build iPhone arm64 static library
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd runtime/nedo004-ffi
+          cargo build --release --target aarch64-apple-ios
+          LIB=target/aarch64-apple-ios/release/libnedo004_ffi.a
+          test -s "$LIB"
+          file "$LIB"
+          lipo -info "$LIB" || true
+          cp "$LIB" "$GITHUB_WORKSPACE/libnedo004_ffi.a"
+          shasum -a 256 "$GITHUB_WORKSPACE/libnedo004_ffi.a"
+
+      - name: Upload static library
+        uses: actions/upload-artifact@v4
+        with:
+          name: libnedo004-ffi-ios-arm64
+          path: libnedo004_ffi.a
+          if-no-files-found: error
+          retention-days: 3

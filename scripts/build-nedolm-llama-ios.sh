@@ -56,22 +56,39 @@ mkdir -p "$TMP" "$FRAMEWORK/Headers" "$FRAMEWORK/Modules"
 xcrun libtool -static -o "$TMP/combined.a" "${LLAMA_LIBS[@]}" "$NEDO_FFI"
 
 cp "$LLAMA_DIR/include/llama.h" "$FRAMEWORK/Headers/"
-for h in ggml.h ggml-alloc.h ggml-backend.h ggml-cpu.h ggml-metal.h ggml-blas.h; do
+for h in ggml.h ggml-alloc.h ggml-backend.h ggml-cpu.h ggml-metal.h ggml-blas.h gguf.h; do
   if [ -f "$LLAMA_DIR/ggml/include/$h" ]; then
     cp "$LLAMA_DIR/ggml/include/$h" "$FRAMEWORK/Headers/"
   fi
 done
 
+# Match the Clang module contract used by Silo's pinned llama.xcframework.
 cat > "$FRAMEWORK/Modules/module.modulemap" <<'EOF'
 framework module llama {
-  umbrella "Headers"
-  link "c++"
-  link framework "Accelerate"
-  link framework "Metal"
-  link framework "Foundation"
-  export *
+    header "llama.h"
+    header "ggml.h"
+    header "ggml-alloc.h"
+    header "ggml-backend.h"
+    header "ggml-metal.h"
+    header "ggml-cpu.h"
+    header "ggml-blas.h"
+    header "gguf.h"
+
+    link "c++"
+    link framework "Accelerate"
+    link framework "Metal"
+    link framework "Foundation"
+
+    export *
 }
 EOF
+
+for required_header in llama.h ggml.h ggml-alloc.h ggml-backend.h ggml-metal.h ggml-cpu.h ggml-blas.h gguf.h; do
+  test -s "$FRAMEWORK/Headers/$required_header" || {
+    echo "Missing framework header: $required_header" >&2
+    exit 10
+  }
+done
 
 cat > "$FRAMEWORK/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -119,4 +136,16 @@ xcodebuild -create-xcframework \
   -framework "$FRAMEWORK" \
   -output "$OUT_XC"
 
-echo "Created: $OUT_XC"
+# Fail early if Swift cannot import the same module Silo imports.
+DEVICE_FRAMEWORK="$(find "$OUT_XC" -type d -name 'llama.framework' -print -quit)"
+test -n "$DEVICE_FRAMEWORK"
+cat > "$TMP/import-llama.swift" <<'EOF'
+import llama
+EOF
+xcrun swiftc \
+  -target "arm64-apple-ios${IOS_MIN}" \
+  -sdk "$SDK" \
+  -F "$(dirname "$DEVICE_FRAMEWORK")" \
+  -typecheck "$TMP/import-llama.swift"
+
+echo "Created and Swift-import verified: $OUT_XC"

@@ -33,6 +33,10 @@ jobs:
             echo "::error::runtime/libnedo004_ffi.a eksik"
             exit 3
           }
+          test -s runtime/nedolm/nedolm.cpp || {
+            echo "::error::runtime/nedolm/nedolm.cpp eksik"
+            exit 4
+          }
 
       - name: Clone Silo
         shell: bash
@@ -51,6 +55,27 @@ jobs:
           git checkout e71b80510c848c00175924ecf3c40333ccae8eb5
           git apply --check "$GITHUB_WORKSPACE/runtime/nedolm-llama.patch"
           git apply "$GITHUB_WORKSPACE/runtime/nedolm-llama.patch"
+
+          # The patch declares the NedoLM model; its implementation is stored as
+          # a separate runtime source and llama.cpp's CMakeLists glob picks it up.
+          cp "$GITHUB_WORKSPACE/runtime/nedolm/nedolm.cpp" src/models/nedolm.cpp
+
+          # Stage the verified iPhone arm64 FFI where the patch expects it at
+          # CMake configure time, so LLAMA_NEDO004_FFI is compiled in.
+          mkdir -p vendor/nedo004-ffi/target/release
+          cp "$GITHUB_WORKSPACE/runtime/libnedo004_ffi.a" \
+             vendor/nedo004-ffi/target/release/libnedo004_ffi.a
+
+          # iOS does not need the desktop dl/pthread/m linkage in this target.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/CMakeLists.txt')
+          s = p.read_text()
+          old = 'target_link_libraries(llama PRIVATE nedo004_ffi dl pthread m)'
+          if old not in s:
+              raise SystemExit('NedoLM FFI CMake linkage anchor not found')
+          p.write_text(s.replace(old, 'target_link_libraries(llama PRIVATE nedo004_ffi)', 1))
+          PY
 
       - name: Build NedoLM llama framework for iPhone arm64
         shell: bash

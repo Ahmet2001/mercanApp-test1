@@ -28,9 +28,16 @@ cmake -S "$LLAMA_DIR" -B "$BUILD" -G Xcode \
 
 cmake --build "$BUILD" --config Release -j "$(sysctl -n hw.logicalcpu)" -- CODE_SIGNING_ALLOWED=NO
 
-mapfile -t LLAMA_LIBS < <(find "$BUILD" -type f -name '*.a' -path '*Release*' -print | sort)
+# macOS ships Bash 3.2, which has no mapfile/readarray.
+LLAMA_LIBS=()
+while IFS= read -r lib; do
+  LLAMA_LIBS+=("$lib")
+done < <(find "$BUILD" -type f -name '*.a' -path '*Release*' -print | sort)
+
 if [ "${#LLAMA_LIBS[@]}" -eq 0 ]; then
-  mapfile -t LLAMA_LIBS < <(find "$BUILD" -type f -name '*.a' -print | sort)
+  while IFS= read -r lib; do
+    LLAMA_LIBS+=("$lib")
+  done < <(find "$BUILD" -type f -name '*.a' -print | sort)
 fi
 
 echo "Static libraries:"

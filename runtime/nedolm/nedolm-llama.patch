@@ -1,0 +1,214 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 221e14f..4b7344a 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -60,6 +60,15 @@ target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
+ 
+ target_link_libraries(llama PUBLIC ggml)
+ 
++# NedoLM exact NDSRF004 tokenizer bridge.
++set(NEDO004_FFI_LIB "${CMAKE_SOURCE_DIR}/vendor/nedo004-ffi/target/release/libnedo004_ffi.a")
++if (EXISTS "${NEDO004_FFI_LIB}")
++    add_library(nedo004_ffi STATIC IMPORTED GLOBAL)
++    set_target_properties(nedo004_ffi PROPERTIES IMPORTED_LOCATION "${NEDO004_FFI_LIB}")
++    target_link_libraries(llama PRIVATE nedo004_ffi dl pthread m)
++    target_compile_definitions(llama PRIVATE LLAMA_NEDO004_FFI=1)
++endif()
++
+ if (BUILD_SHARED_LIBS)
+     set_target_properties(llama PROPERTIES POSITION_INDEPENDENT_CODE ON)
+     target_compile_definitions(llama PRIVATE LLAMA_BUILD)
+diff --git a/src/llama-arch.cpp b/src/llama-arch.cpp
+index 15f6519..b9361a3 100644
+--- a/src/llama-arch.cpp
++++ b/src/llama-arch.cpp
+@@ -31,6 +31,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
+     { LLM_ARCH_STABLELM,         "stablelm"         },
+     { LLM_ARCH_QWEN,             "qwen"             },
+     { LLM_ARCH_QWEN2,            "qwen2"            },
++    { LLM_ARCH_NEDOLM,           "nedolm"           },
+     { LLM_ARCH_QWEN2MOE,         "qwen2moe"         },
+     { LLM_ARCH_QWEN2VL,          "qwen2vl"          },
+     { LLM_ARCH_QWEN3,            "qwen3"            },
+diff --git a/src/llama-arch.h b/src/llama-arch.h
+index f1d173a..9d1f596 100644
+--- a/src/llama-arch.h
++++ b/src/llama-arch.h
+@@ -36,6 +36,7 @@ enum llm_arch {
+     LLM_ARCH_STABLELM,
+     LLM_ARCH_QWEN,
+     LLM_ARCH_QWEN2,
++    LLM_ARCH_NEDOLM,
+     LLM_ARCH_QWEN2MOE,
+     LLM_ARCH_QWEN2VL,
+     LLM_ARCH_QWEN3,
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index ffedf89..98688b2 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -96,6 +96,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
+             return new llama_model_qwen(params);
+         case LLM_ARCH_QWEN2:
+             return new llama_model_qwen2(params);
++        case LLM_ARCH_NEDOLM:
++            return new llama_model_nedolm(params);
+         case LLM_ARCH_DREAM:
+             return new llama_model_dream(params);
+         case LLM_ARCH_LLADA:
+@@ -2947,6 +2949,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
+         case LLM_ARCH_BITNET:
+         case LLM_ARCH_QWEN:
+         case LLM_ARCH_QWEN2:
++        case LLM_ARCH_NEDOLM:
+         case LLM_ARCH_DREAM:
+         case LLM_ARCH_QWEN2MOE:
+         case LLM_ARCH_QWEN3:
+diff --git a/src/llama-vocab.cpp b/src/llama-vocab.cpp
+index a69801f..125623b 100644
+--- a/src/llama-vocab.cpp
++++ b/src/llama-vocab.cpp
+@@ -1,5 +1,10 @@
+ #include "llama-vocab.h"
+ 
++#ifdef LLAMA_NEDO004_FFI
++extern "C" const uint16_t * nedo004_encode(const uint8_t * data, size_t len, size_t * out_len);
++extern "C" const char * nedo004_vocab_sha256();
++#endif
++
+ #include "ggml.h"
+ #include "gguf.h"
+ #include "llama-impl.h"
+@@ -1829,6 +1834,7 @@ struct llama_vocab::impl {
+     bool remove_extra_whitespaces   = false;
+     bool escape_whitespaces         = true;
+     bool treat_whitespace_as_suffix = false;
++    bool nedolm_exact_tokenizer       = false;
+ 
+     // BertNormalizer options
+     llama_vocab::normalizer_options normalizer_opts;
+@@ -1932,6 +1938,10 @@ private:
+ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
+     struct gguf_context * ctx = ml.metadata;
+ 
++    std::string nedolm_general_arch;
++    ml.get_key(LLM_KV_GENERAL_ARCHITECTURE, nedolm_general_arch, false);
++    nedolm_exact_tokenizer = (nedolm_general_arch == "nedolm");
++
+     // determine vocab type
+     {
+         ml.get_key(LLM_KV_TOKENIZER_MODEL, tokenizer_model);
+@@ -2071,15 +2081,39 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
+                 }
+ #endif
+             }
+-        } else if (tokenizer_model == "rwkv") {
++        } else if (tokenizer_model == "rwkv" || tokenizer_model == "nedolm") {
+             type = LLAMA_VOCAB_TYPE_RWKV;
+ 
+-            // default special tokens
+-            special_bos_id = LLAMA_TOKEN_NULL;
+-            special_eos_id = LLAMA_TOKEN_NULL;
+-            special_unk_id = LLAMA_TOKEN_NULL;
+-            special_sep_id = LLAMA_TOKEN_NULL;
+-            special_pad_id = LLAMA_TOKEN_NULL;
++            // NedoLM uses the exact NDSRF004 external encoder but the same raw-byte
++            // token-piece storage/decoding machinery as RWKV.
++            if (nedolm_exact_tokenizer || tokenizer_model == "nedolm") {
++#ifdef LLAMA_NEDO004_FFI
++                const int sha_keyidx = gguf_find_key(ctx, "nedolm.vocab_sha256");
++                if (sha_keyidx < 0 || gguf_get_kv_type(ctx, sha_keyidx) != GGUF_TYPE_STRING) {
++                    throw std::runtime_error("NedoLM GGUF is missing nedolm.vocab_sha256");
++                }
++                const char * gguf_sha = gguf_get_val_str(ctx, sha_keyidx);
++                const char * runtime_sha = nedo004_vocab_sha256();
++                if (runtime_sha == nullptr || gguf_sha == nullptr || std::string(gguf_sha) != runtime_sha) {
++                    throw std::runtime_error(format(
++                        "NDSRF004 tokenizer SHA mismatch: GGUF=%s runtime=%s",
++                        gguf_sha ? gguf_sha : "<null>", runtime_sha ? runtime_sha : "<null>"));
++                }
++#else
++                throw std::runtime_error("NedoLM GGUF requires llama.cpp built with the NDSRF004 tokenizer bridge");
++#endif
++                special_bos_id = 1;
++                special_eos_id = 2;
++                special_unk_id = LLAMA_TOKEN_NULL;
++                special_sep_id = LLAMA_TOKEN_NULL;
++                special_pad_id = 0;
++            } else {
++                special_bos_id = LLAMA_TOKEN_NULL;
++                special_eos_id = LLAMA_TOKEN_NULL;
++                special_unk_id = LLAMA_TOKEN_NULL;
++                special_sep_id = LLAMA_TOKEN_NULL;
++                special_pad_id = LLAMA_TOKEN_NULL;
++            }
+         } else if (tokenizer_model == "plamo2") {
+             type = LLAMA_VOCAB_TYPE_PLAMO2;
+ 
+@@ -3552,6 +3586,35 @@ std::vector<llama_token> llama_vocab::impl::tokenize(
+             } break;
+         case LLAMA_VOCAB_TYPE_RWKV:
+             {
++#ifdef LLAMA_NEDO004_FFI
++                if (nedolm_exact_tokenizer) {
++                    if (add_special && add_bos) {
++                        GGML_ASSERT(special_bos_id != LLAMA_TOKEN_NULL);
++                        output.push_back(special_bos_id);
++                    }
++                    for (const auto & fragment : fragment_buffer) {
++                        if (fragment.type == FRAGMENT_BUFFER_VARIANT_TYPE_RAW_TEXT) {
++                            const std::string text = fragment.raw_text.substr(fragment.offset, fragment.length);
++                            size_t n_ids = 0;
++                            const uint16_t * ids = nedo004_encode(
++                                reinterpret_cast<const uint8_t *>(text.data()), text.size(), &n_ids);
++                            if (ids == nullptr && n_ids != 0) {
++                                throw std::runtime_error("NDSRF004 tokenizer returned null token buffer");
++                            }
++                            for (size_t i = 0; i < n_ids; ++i) {
++                                output.push_back(static_cast<llama_token>(ids[i]));
++                            }
++                        } else {
++                            output.push_back(fragment.token);
++                        }
++                    }
++                    if (add_special && add_eos) {
++                        GGML_ASSERT(special_eos_id != LLAMA_TOKEN_NULL);
++                        output.push_back(special_eos_id);
++                    }
++                    break;
++                }
++#endif
+                 llm_tokenizer_rwkv_session session(vocab, *static_cast<const llm_tokenizer_rwkv *>(tokenizer.get()));
+                 for (const auto & fragment : fragment_buffer) {
+                     if (fragment.type == FRAGMENT_BUFFER_VARIANT_TYPE_RAW_TEXT) {
+@@ -3562,7 +3625,7 @@ std::vector<llama_token> llama_vocab::impl::tokenize(
+ #endif
+ 
+                         session.tokenize(text, output);
+-                    } else { // if (fragment.type == FRAGMENT_BUFFER_VARIANT_TYPE_TOKEN)
++                    } else {
+                         output.push_back(fragment.token);
+                     }
+                 }
+diff --git a/src/models/models.h b/src/models/models.h
+index 87195fd..8b4f390 100644
+--- a/src/models/models.h
++++ b/src/models/models.h
+@@ -491,6 +491,18 @@ struct llama_model_qwen2 : public llama_model_base {
+     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
+ };
+ 
++struct llama_model_nedolm : public llama_model_base {
++    llama_model_nedolm(const struct llama_model_params & params) : llama_model_base(params) {}
++    void load_arch_hparams(llama_model_loader & ml) override;
++    void load_arch_tensors(llama_model_loader & ml) override;
++
++    struct graph : public llm_graph_context {
++        graph(const llama_model & model, const llm_graph_params & params);
++    };
++
++    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
++};
++
+ 
+ struct llama_model_dream : public llama_model_base {
+     llama_model_dream(const struct llama_model_params & params) : llama_model_base(params) {}

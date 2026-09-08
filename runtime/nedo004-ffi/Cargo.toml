@@ -1,0 +1,11 @@
+[package]
+name = "nedo004-ffi"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+nedo-tokenizer = { path = "../NedoTokenizer/crates/nedo-tokenizer" }

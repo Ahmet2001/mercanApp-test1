@@ -101,19 +101,22 @@ jobs:
           mkdir -p work/diagnostics/llama
           cp work/llama-framework-build.log work/diagnostics/llama/ 2>/dev/null || true
           {
-            echo "=== XCFramework layout ==="
+            echo "=== Generated NedoLM XCFramework layout ==="
             find work/nedolm-llama.xcframework -maxdepth 5 -print 2>/dev/null | sort || true
             echo
-            echo "=== Module maps ==="
+            echo "=== Generated module maps ==="
             find work/nedolm-llama.xcframework -name module.modulemap -type f -print 2>/dev/null | sort || true
             echo
-            echo "=== Headers ==="
+            echo "=== Generated headers ==="
             find work/nedolm-llama.xcframework -path '*/Headers/*' -type f -print 2>/dev/null | sort || true
+            echo
+            echo "=== Pinned Silo XCFramework layout ==="
+            find work/silo/llama.xcframework -maxdepth 4 -print 2>/dev/null | sort || true
           } > work/diagnostics/llama/framework-layout.txt
           while IFS= read -r map; do
             safe="$(echo "$map" | tr '/ ' '__')"
             cp "$map" "work/diagnostics/llama/${safe}" 2>/dev/null || true
-          done < <(find work/nedolm-llama.xcframework -name module.modulemap -type f -print 2>/dev/null)
+          done < <(find work/nedolm-llama.xcframework work/silo/llama.xcframework -name module.modulemap -type f -print 2>/dev/null)
 
       - name: Upload llama framework diagnostics
         if: always()
@@ -128,15 +131,39 @@ jobs:
         if: steps.llama_build.outputs.status != '0'
         shell: bash
         run: |
-          echo "::error::NedoLM llama XCFramework build/import validation failed. See NedoLM-Llama-Framework-Diagnostics."
+          echo "::error::NedoLM llama iPhone arm64 framework build failed. See NedoLM-Llama-Framework-Diagnostics."
           exit 1
 
-      - name: Replace Silo llama.xcframework
+      - name: Install NedoLM device binary into pinned Silo XCFramework
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf work/silo/llama.xcframework
-          cp -R work/nedolm-llama.xcframework work/silo/llama.xcframework
+          SRC_FW="$GITHUB_WORKSPACE/work/nedolm-llama.xcframework/ios-arm64/llama.framework"
+          DST_FW="$GITHUB_WORKSPACE/work/silo/llama.xcframework/ios-arm64/llama.framework"
+
+          test -s "$SRC_FW/llama"
+          test -s "$DST_FW/llama"
+          test -s "$DST_FW/Info.plist"
+          test -s "$DST_FW/Modules/module.modulemap"
+
+          MODULE_SHA_BEFORE="$(shasum -a 256 "$DST_FW/Modules/module.modulemap" | awk '{print $1}')"
+          INFO_SHA_BEFORE="$(shasum -a 256 "$DST_FW/Info.plist" | awk '{print $1}')"
+
+          # Preserve Silo's known-good XCFramework container, simulator slice,
+          # headers, modulemap and plist. Replace only the iPhone arm64 executable.
+          cp "$SRC_FW/llama" "$DST_FW/llama"
+          chmod +x "$DST_FW/llama"
+
+          MODULE_SHA_AFTER="$(shasum -a 256 "$DST_FW/Modules/module.modulemap" | awk '{print $1}')"
+          INFO_SHA_AFTER="$(shasum -a 256 "$DST_FW/Info.plist" | awk '{print $1}')"
+          test "$MODULE_SHA_BEFORE" = "$MODULE_SHA_AFTER"
+          test "$INFO_SHA_BEFORE" = "$INFO_SHA_AFTER"
+
+          echo "Pinned Silo modulemap SHA256: $MODULE_SHA_AFTER"
+          echo "Pinned Silo framework Info.plist SHA256: $INFO_SHA_AFTER"
+          file "$DST_FW/llama"
+          lipo -info "$DST_FW/llama"
+          otool -L "$DST_FW/llama"
 
       - name: Build unsigned Silo app for device
         id: silo_build

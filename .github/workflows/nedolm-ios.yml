@@ -78,14 +78,58 @@ jobs:
           PY
 
       - name: Build NedoLM llama framework for iPhone arm64
+        id: llama_build
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
           chmod +x scripts/build-nedolm-llama-ios.sh
+          set +e
           scripts/build-nedolm-llama-ios.sh \
             "$GITHUB_WORKSPACE/work/llama.cpp" \
             "$GITHUB_WORKSPACE/runtime/libnedo004_ffi.a" \
-            "$GITHUB_WORKSPACE/work/nedolm-llama.xcframework"
+            "$GITHUB_WORKSPACE/work/nedolm-llama.xcframework" \
+            2>&1 | tee "$GITHUB_WORKSPACE/work/llama-framework-build.log"
+          status=${PIPESTATUS[0]}
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Collect llama framework diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p work/diagnostics/llama
+          cp work/llama-framework-build.log work/diagnostics/llama/ 2>/dev/null || true
+          {
+            echo "=== XCFramework layout ==="
+            find work/nedolm-llama.xcframework -maxdepth 5 -print 2>/dev/null | sort || true
+            echo
+            echo "=== Module maps ==="
+            find work/nedolm-llama.xcframework -name module.modulemap -type f -print 2>/dev/null | sort || true
+            echo
+            echo "=== Headers ==="
+            find work/nedolm-llama.xcframework -path '*/Headers/*' -type f -print 2>/dev/null | sort || true
+          } > work/diagnostics/llama/framework-layout.txt
+          while IFS= read -r map; do
+            safe="$(echo "$map" | tr '/ ' '__')"
+            cp "$map" "work/diagnostics/llama/${safe}" 2>/dev/null || true
+          done < <(find work/nedolm-llama.xcframework -name module.modulemap -type f -print 2>/dev/null)
+
+      - name: Upload llama framework diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NedoLM-Llama-Framework-Diagnostics
+          path: work/diagnostics/llama
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Stop on llama framework failure
+        if: steps.llama_build.outputs.status != '0'
+        shell: bash
+        run: |
+          echo "::error::NedoLM llama XCFramework build/import validation failed. See NedoLM-Llama-Framework-Diagnostics."
+          exit 1
 
       - name: Replace Silo llama.xcframework
         shell: bash
@@ -95,10 +139,12 @@ jobs:
           cp -R work/nedolm-llama.xcframework work/silo/llama.xcframework
 
       - name: Build unsigned Silo app for device
+        id: silo_build
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
           cd work/silo
+          set +e
           xcodebuild \
             -project Silo.xcodeproj \
             -scheme Silo \
@@ -110,7 +156,26 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             DEVELOPMENT_TEAM="" \
-            build
+            build 2>&1 | tee "$GITHUB_WORKSPACE/work/xcodebuild.log"
+          status=${PIPESTATUS[0]}
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload Xcode diagnostics
+        if: always() && steps.llama_build.outputs.status == '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: NedoLM-Xcode-Diagnostics
+          path: work/xcodebuild.log
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Stop on Silo build failure
+        if: steps.silo_build.outputs.status != '' && steps.silo_build.outputs.status != '0'
+        shell: bash
+        run: |
+          echo "::error::Unsigned Silo iPhone build failed. See NedoLM-Xcode-Diagnostics."
+          exit 1
 
       - name: Package unsigned IPA
         shell: bash

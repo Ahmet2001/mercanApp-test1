@@ -58,6 +58,58 @@ jobs:
 
           cp "$GITHUB_WORKSPACE/runtime/nedolm/nedolm.cpp" src/models/nedolm.cpp
 
+          # Silo was compiled against an older llama C ABI. Keep Silo's original
+          # headers (so they remain compatible with whisper's ggml headers), and
+          # cross the changed by-value structs through these scalar/pointer-only
+          # wrappers compiled against the exact e71b805 llama ABI.
+          cat > src/nedolm-silo-abi.cpp <<'CPP'
+          #include "llama.h"
+
+          extern "C" struct llama_model * nedolm_silo_model_load_from_file(
+                  const char * path_model,
+                  llama_progress_callback progress_callback,
+                  void * progress_callback_user_data) {
+              auto params = llama_model_default_params();
+              params.progress_callback = progress_callback;
+              params.progress_callback_user_data = progress_callback_user_data;
+              return llama_model_load_from_file(path_model, params);
+          }
+
+          extern "C" struct llama_context * nedolm_silo_context_init(
+                  struct llama_model * model,
+                  uint32_t n_ctx,
+                  int32_t n_threads,
+                  int32_t n_threads_batch) {
+              auto params = llama_context_default_params();
+              params.n_ctx = n_ctx;
+              params.n_threads = n_threads;
+              params.n_threads_batch = n_threads_batch;
+              return llama_init_from_model(model, params);
+          }
+
+          extern "C" struct llama_sampler * nedolm_silo_create_sampler_chain(
+                  const struct llama_model * model) {
+              auto * chain = llama_sampler_chain_init(llama_sampler_chain_default_params());
+              if (chain == nullptr || model == nullptr) {
+                  return chain;
+              }
+
+              const struct llama_vocab * vocab = llama_model_get_vocab(model);
+              if (vocab == nullptr) {
+                  llama_sampler_free(chain);
+                  return nullptr;
+              }
+
+              llama_sampler_chain_add(chain, llama_sampler_init_top_k(40));
+              llama_sampler_chain_add(chain, llama_sampler_init_temp(0.7f));
+              llama_sampler_chain_add(chain, llama_sampler_init_min_p(0.05f, 1));
+              llama_sampler_chain_add(chain, llama_sampler_init_penalties(
+                  llama_vocab_n_tokens(vocab), 64, 1.1f, 0.0f, 0.0f));
+              llama_sampler_chain_add(chain, llama_sampler_init_dist(1234));
+              return chain;
+          }
+          CPP
+
           mkdir -p vendor/nedo004-ffi/target/release
           cp "$GITHUB_WORKSPACE/runtime/libnedo004_ffi.a" \
              vendor/nedo004-ffi/target/release/libnedo004_ffi.a
@@ -67,9 +119,10 @@ jobs:
           p = Path('src/CMakeLists.txt')
           s = p.read_text()
           old = 'target_link_libraries(llama PRIVATE nedo004_ffi dl pthread m)'
+          new = 'target_link_libraries(llama PRIVATE nedo004_ffi)\ntarget_sources(llama PRIVATE nedolm-silo-abi.cpp)'
           if old not in s:
               raise SystemExit('NedoLM FFI CMake linkage anchor not found')
-          p.write_text(s.replace(old, 'target_link_libraries(llama PRIVATE nedo004_ffi)', 1))
+          p.write_text(s.replace(old, new, 1))
           PY
 
       - name: Build NedoLM llama framework for iPhone arm64
@@ -129,63 +182,166 @@ jobs:
           echo "::error::NedoLM llama iPhone arm64 framework build failed. See NedoLM-Llama-Framework-Diagnostics."
           exit 1
 
-      - name: Install ABI-matched NedoLM device framework into pinned Silo XCFramework
+      - name: Install NedoLM binary with Silo ABI bridge
         shell: bash
         run: |
           set -euo pipefail
           SRC_FW="$GITHUB_WORKSPACE/work/nedolm-llama.xcframework/ios-arm64/llama.framework"
           DST_FW="$GITHUB_WORKSPACE/work/silo/llama.xcframework/ios-arm64/llama.framework"
-          LLAMA_SRC="$GITHUB_WORKSPACE/work/llama.cpp"
+          SWIFT="$GITHUB_WORKSPACE/work/silo/Silo/Inference/LibLlama.swift"
 
           test -s "$SRC_FW/llama"
           test -s "$DST_FW/llama"
           test -s "$DST_FW/Info.plist"
           test -s "$DST_FW/Modules/module.modulemap"
-          test -s "$LLAMA_SRC/include/llama.h"
-          test -d "$LLAMA_SRC/ggml/include"
+          test -s "$DST_FW/Headers/llama.h"
+          test -s "$SWIFT"
 
           MODULE_SHA_BEFORE="$(shasum -a 256 "$DST_FW/Modules/module.modulemap" | awk '{print $1}')"
           INFO_SHA_BEFORE="$(shasum -a 256 "$DST_FW/Info.plist" | awk '{print $1}')"
-          OLD_HEADER_SHA="$(shasum -a 256 "$DST_FW/Headers/llama.h" | awk '{print $1}')"
 
-          # The executable and C headers must come from the exact same llama.cpp
-          # commit. Silo's pinned XCFramework headers predate e71b805 and have a
-          # different llama_model_params/context ABI, which corrupts function
-          # pointers during model loading on a physical iPhone.
+          # Swap only the executable. Keep Silo's pinned llama/ggml headers so the
+          # Clang module still agrees with whisper.framework's ggml definitions.
           cp "$SRC_FW/llama" "$DST_FW/llama"
           chmod +x "$DST_FW/llama"
 
-          rm -rf "$DST_FW/Headers"
-          mkdir -p "$DST_FW/Headers"
-          cp "$LLAMA_SRC/include/"*.h "$DST_FW/Headers/"
-          cp "$LLAMA_SRC/ggml/include/"*.h "$DST_FW/Headers/"
+          # Expose only the scalar/pointer ABI bridge in the old llama header.
+          python3 - <<'PY'
+          from pathlib import Path
 
-          test -s "$DST_FW/Headers/llama.h"
-          test -s "$DST_FW/Headers/ggml.h"
-          test -s "$DST_FW/Headers/ggml-opt.h"
-          test -s "$DST_FW/Headers/gguf.h"
+          header = Path('work/silo/llama.xcframework/ios-arm64/llama.framework/Headers/llama.h')
+          s = header.read_text()
+          if '#define LLAMA_SESSION_VERSION 9' not in s:
+              raise SystemExit('Expected pinned Silo llama ABI v9 header')
+          marker = '#ifdef __cplusplus\n}\n#endif\n\n#endif // LLAMA_H'
+          if marker not in s:
+              raise SystemExit('Could not find llama.h closing marker')
+          bridge = r'''
+              // NedoLM/Silo ABI bridge. Implemented by the e71b805 NedoLM binary.
+              // These functions avoid passing version-sensitive llama parameter structs
+              // by value across Silo's older Clang-imported C ABI.
+              LLAMA_API struct llama_model * nedolm_silo_model_load_from_file(
+                      const char * path_model,
+                      llama_progress_callback progress_callback,
+                      void * progress_callback_user_data);
 
-          SRC_HEADER_SHA="$(shasum -a 256 "$LLAMA_SRC/include/llama.h" | awk '{print $1}')"
-          DST_HEADER_SHA="$(shasum -a 256 "$DST_FW/Headers/llama.h" | awk '{print $1}')"
-          test "$SRC_HEADER_SHA" = "$DST_HEADER_SHA"
+              LLAMA_API struct llama_context * nedolm_silo_context_init(
+                      struct llama_model * model,
+                      uint32_t n_ctx,
+                      int32_t n_threads,
+                      int32_t n_threads_batch);
 
-          # Assert the new ABI that the NedoLM binary was built against.
-          grep -q '#define LLAMA_SESSION_VERSION 10' "$DST_FW/Headers/llama.h"
-          grep -q 'enum llama_load_mode  load_mode' "$DST_FW/Headers/llama.h"
-          grep -q 'enum llama_lazy_mode lazy_mode' "$DST_FW/Headers/llama.h"
+              LLAMA_API struct llama_sampler * nedolm_silo_create_sampler_chain(
+                      const struct llama_model * model);
+          '''.strip('\n')
+          header.write_text(s.replace(marker, bridge + '\n\n' + marker, 1))
+          PY
+
+          # Route only the version-sensitive calls through the bridge. The rest of
+          # LibLlama keeps using Silo's original stable C declarations.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('work/silo/Silo/Inference/LibLlama.swift')
+          s = p.read_text()
+
+          old_sampler = '''        let sparams = llama_sampler_chain_default_params()
+                  self.sampling = llama_sampler_chain_init(sparams)
+                  llama_sampler_chain_add(self.sampling, llama_sampler_init_top_k(40))
+                  llama_sampler_chain_add(self.sampling, llama_sampler_init_temp(0.7))
+                  llama_sampler_chain_add(self.sampling, llama_sampler_init_min_p(0.05, 1))
+                  llama_sampler_chain_add(self.sampling, llama_sampler_init_penalties(64, 1.1, 0.0, 0.0))
+                  llama_sampler_chain_add(self.sampling, llama_sampler_init_dist(1234))
+                  vocab = llama_model_get_vocab(model)'''.replace('                  ', '        ')
+          new_sampler = '''        guard let sampling = nedolm_silo_create_sampler_chain(model) else {
+                      fatalError("Could not initialize NedoLM sampler chain")
+                  }
+                  self.sampling = sampling
+                  vocab = llama_model_get_vocab(model)'''.replace('                  ', '        ')
+          if old_sampler not in s:
+              raise SystemExit('Sampler initialization anchor not found in LibLlama.swift')
+          s = s.replace(old_sampler, new_sampler, 1)
+
+          start = s.index('        var model_params = llama_model_default_params()')
+          end_anchor = '        guard let model else {'
+          end = s.index(end_anchor, start)
+          old_model_block = s[start:end]
+          new_model_block = '''        let model: OpaquePointer?
+                  if let onProgress {
+                      let ctx = ProgressCallbackContext(onProgress)
+                      let rawPtr = Unmanaged.passRetained(ctx).toOpaque()
+                      model = nedolm_silo_model_load_from_file(path, { progress, userData in
+                          if let userData {
+                              let ctx = Unmanaged<ProgressCallbackContext>.fromOpaque(userData).takeUnretainedValue()
+                              ctx.handler(progress)
+                          }
+                          return true
+                      }, rawPtr)
+                      Unmanaged<ProgressCallbackContext>.fromOpaque(rawPtr).release()
+                  } else {
+                      model = nedolm_silo_model_load_from_file(path, nil, nil)
+                  }
+
+          '''.replace('                  ', '        ')
+          s = s[:start] + new_model_block + s[end:]
+
+          ctx_start = s.index('        var ctx_params = llama_context_default_params()')
+          ctx_end_anchor = '        guard let context else {'
+          ctx_end = s.index(ctx_end_anchor, ctx_start)
+          old_ctx_block = s[ctx_start:ctx_end]
+          effective_start = old_ctx_block.index('        #if targetEnvironment(simulator)')
+          effective_block = old_ctx_block[effective_start:]
+          # Keep the existing effectiveContext conditional, remove the old params
+          # mutations, then initialize through the new-ABI wrapper.
+          lines = effective_block.splitlines()
+          kept = []
+          in_conditional = True
+          for line in lines:
+              if in_conditional:
+                  kept.append(line)
+                  if line.strip() == '#endif':
+                      in_conditional = False
+          new_ctx_block = '\n'.join(kept) + '''
+                  let context = nedolm_silo_context_init(
+                      model,
+                      effectiveContext,
+                      Int32(n_threads),
+                      Int32(n_threads)
+                  )
+          '''.replace('                  ', '        ')
+          s = s[:ctx_start] + new_ctx_block + s[ctx_end:]
+
+          forbidden = [
+              'llama_model_default_params()',
+              'llama_context_default_params()',
+              'llama_sampler_chain_default_params()',
+              'llama_sampler_init_penalties(64,',
+          ]
+          for needle in forbidden:
+              if needle in s:
+                  raise SystemExit(f'Old ABI-sensitive call still present: {needle}')
+
+          p.write_text(s)
+          PY
+
+          grep -q 'nedolm_silo_model_load_from_file' "$DST_FW/Headers/llama.h"
+          grep -q 'nedolm_silo_context_init' "$DST_FW/Headers/llama.h"
+          grep -q 'nedolm_silo_create_sampler_chain' "$DST_FW/Headers/llama.h"
+          grep -q 'nedolm_silo_model_load_from_file' "$SWIFT"
+          grep -q 'nedolm_silo_context_init' "$SWIFT"
+          grep -q 'nedolm_silo_create_sampler_chain' "$SWIFT"
 
           MODULE_SHA_AFTER="$(shasum -a 256 "$DST_FW/Modules/module.modulemap" | awk '{print $1}')"
           INFO_SHA_AFTER="$(shasum -a 256 "$DST_FW/Info.plist" | awk '{print $1}')"
           test "$MODULE_SHA_BEFORE" = "$MODULE_SHA_AFTER"
           test "$INFO_SHA_BEFORE" = "$INFO_SHA_AFTER"
 
-          echo "Old pinned llama.h SHA256: $OLD_HEADER_SHA"
-          echo "ABI-matched llama.h SHA256: $DST_HEADER_SHA"
           echo "Pinned Silo modulemap SHA256: $MODULE_SHA_AFTER"
           echo "Pinned Silo framework Info.plist SHA256: $INFO_SHA_AFTER"
           file "$DST_FW/llama"
           lipo -info "$DST_FW/llama"
           otool -L "$DST_FW/llama"
+          nm -gU "$DST_FW/llama" | grep 'nedolm_silo_'
 
       - name: Repair pinned Silo whisper XCFramework debug-symbol paths
         shell: bash

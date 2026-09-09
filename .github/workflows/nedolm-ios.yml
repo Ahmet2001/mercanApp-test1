@@ -129,29 +129,58 @@ jobs:
           echo "::error::NedoLM llama iPhone arm64 framework build failed. See NedoLM-Llama-Framework-Diagnostics."
           exit 1
 
-      - name: Install NedoLM device binary into pinned Silo XCFramework
+      - name: Install ABI-matched NedoLM device framework into pinned Silo XCFramework
         shell: bash
         run: |
           set -euo pipefail
           SRC_FW="$GITHUB_WORKSPACE/work/nedolm-llama.xcframework/ios-arm64/llama.framework"
           DST_FW="$GITHUB_WORKSPACE/work/silo/llama.xcframework/ios-arm64/llama.framework"
+          LLAMA_SRC="$GITHUB_WORKSPACE/work/llama.cpp"
 
           test -s "$SRC_FW/llama"
           test -s "$DST_FW/llama"
           test -s "$DST_FW/Info.plist"
           test -s "$DST_FW/Modules/module.modulemap"
+          test -s "$LLAMA_SRC/include/llama.h"
+          test -d "$LLAMA_SRC/ggml/include"
 
           MODULE_SHA_BEFORE="$(shasum -a 256 "$DST_FW/Modules/module.modulemap" | awk '{print $1}')"
           INFO_SHA_BEFORE="$(shasum -a 256 "$DST_FW/Info.plist" | awk '{print $1}')"
+          OLD_HEADER_SHA="$(shasum -a 256 "$DST_FW/Headers/llama.h" | awk '{print $1}')"
 
+          # The executable and C headers must come from the exact same llama.cpp
+          # commit. Silo's pinned XCFramework headers predate e71b805 and have a
+          # different llama_model_params/context ABI, which corrupts function
+          # pointers during model loading on a physical iPhone.
           cp "$SRC_FW/llama" "$DST_FW/llama"
           chmod +x "$DST_FW/llama"
+
+          rm -rf "$DST_FW/Headers"
+          mkdir -p "$DST_FW/Headers"
+          cp "$LLAMA_SRC/include/"*.h "$DST_FW/Headers/"
+          cp "$LLAMA_SRC/ggml/include/"*.h "$DST_FW/Headers/"
+
+          test -s "$DST_FW/Headers/llama.h"
+          test -s "$DST_FW/Headers/ggml.h"
+          test -s "$DST_FW/Headers/ggml-opt.h"
+          test -s "$DST_FW/Headers/gguf.h"
+
+          SRC_HEADER_SHA="$(shasum -a 256 "$LLAMA_SRC/include/llama.h" | awk '{print $1}')"
+          DST_HEADER_SHA="$(shasum -a 256 "$DST_FW/Headers/llama.h" | awk '{print $1}')"
+          test "$SRC_HEADER_SHA" = "$DST_HEADER_SHA"
+
+          # Assert the new ABI that the NedoLM binary was built against.
+          grep -q '#define LLAMA_SESSION_VERSION 10' "$DST_FW/Headers/llama.h"
+          grep -q 'enum llama_load_mode  load_mode' "$DST_FW/Headers/llama.h"
+          grep -q 'enum llama_lazy_mode lazy_mode' "$DST_FW/Headers/llama.h"
 
           MODULE_SHA_AFTER="$(shasum -a 256 "$DST_FW/Modules/module.modulemap" | awk '{print $1}')"
           INFO_SHA_AFTER="$(shasum -a 256 "$DST_FW/Info.plist" | awk '{print $1}')"
           test "$MODULE_SHA_BEFORE" = "$MODULE_SHA_AFTER"
           test "$INFO_SHA_BEFORE" = "$INFO_SHA_AFTER"
 
+          echo "Old pinned llama.h SHA256: $OLD_HEADER_SHA"
+          echo "ABI-matched llama.h SHA256: $DST_HEADER_SHA"
           echo "Pinned Silo modulemap SHA256: $MODULE_SHA_AFTER"
           echo "Pinned Silo framework Info.plist SHA256: $INFO_SHA_AFTER"
           file "$DST_FW/llama"

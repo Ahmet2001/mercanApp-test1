@@ -4,13 +4,14 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    tags: ['ios-v*']
     paths:
       - ".github/workflows/nedolm-ios.yml"
       - "scripts/**"
       - "runtime/**"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -45,6 +46,42 @@ jobs:
           git clone https://github.com/stevederico/silo.git work/silo
           cd work/silo
           git checkout 1be4fa9aad0ec72dbb6f40ac07d537ea16648944
+
+      - name: Configure Silo as Mercan iOS
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY2'
+          from pathlib import Path
+          import plistlib
+
+          state = Path('work/silo/Silo/UI/LlamaState.swift')
+          text = state.read_text()
+          start = text.index('    static let defaultModel = Model(')
+          end = text.index('    static let lfmSimulatorModel = Model(', start)
+          mercan = '''    static let defaultModel = Model(
+        name: "Mercan 0.8B SFT Q4_K_M (482 MiB)",
+        url: "https://huggingface.co/MercanAI/Mercan-0.8B-SFT/resolve/main/model.mercan?download=true",
+        filename: "Mercan-0.8B-SFT.gguf",
+        status: "download",
+        released: catalogDate(2026, 9, 11))
+
+'''
+          text = text[:start] + mercan + text[end:]
+          req = '    let modelRequirements: [String: Double] = [\n'
+          if req in text:
+              text = text.replace(req, req + '        "Mercan 0.8B SFT Q4_K_M (482 MiB)": 1.2,\n', 1)
+          state.write_text(text)
+
+          plist_path = Path('work/silo/Silo/Info.plist')
+          info = plistlib.loads(plist_path.read_bytes())
+          info['CFBundleDisplayName'] = 'Mercan'
+          info['NSMicrophoneUsageDescription'] = 'Mercan uses the microphone only for on-device voice input.'
+          info['NSSpeechRecognitionUsageDescription'] = 'Mercan can transcribe audio on device.'
+          plist_path.write_bytes(plistlib.dumps(info, sort_keys=False))
+          PY2
+          grep -q 'MercanAI/Mercan-0.8B-SFT' work/silo/Silo/UI/LlamaState.swift
+          grep -q 'Mercan-0.8B-SFT.gguf' work/silo/Silo/UI/LlamaState.swift
 
       - name: Clone and patch llama.cpp
         shell: bash
@@ -100,12 +137,7 @@ jobs:
                   return nullptr;
               }
 
-              llama_sampler_chain_add(chain, llama_sampler_init_top_k(40));
-              llama_sampler_chain_add(chain, llama_sampler_init_temp(0.7f));
-              llama_sampler_chain_add(chain, llama_sampler_init_min_p(0.05f, 1));
-              llama_sampler_chain_add(chain, llama_sampler_init_penalties(
-                  llama_vocab_n_tokens(vocab), 64, 1.1f, 0.0f, 0.0f));
-              llama_sampler_chain_add(chain, llama_sampler_init_dist(1234));
+              llama_sampler_chain_add(chain, llama_sampler_init_greedy());
               return chain;
           }
           CPP
@@ -419,14 +451,27 @@ jobs:
           cp -R "$APP" work/Payload/
           (
             cd work
-            /usr/bin/zip -qry NedoLM-Silo-unsigned.ipa Payload
+            /usr/bin/zip -qry Mercan-iOS-unsigned.ipa Payload
           )
-          shasum -a 256 work/NedoLM-Silo-unsigned.ipa
+          shasum -a 256 work/Mercan-iOS-unsigned.ipa
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: NedoLM-Silo-unsigned-IPA
-          path: work/NedoLM-Silo-unsigned.ipa
+          name: Mercan-iOS-unsigned-IPA
+          path: work/Mercan-iOS-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
+
+
+      - name: Publish iOS GitHub Release
+        if: startsWith(github.ref, 'refs/tags/ios-v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Mercan iOS $GITHUB_REF_NAME" \
+            --generate-notes \
+            work/Mercan-iOS-unsigned.ipa

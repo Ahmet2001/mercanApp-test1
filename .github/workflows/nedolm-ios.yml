@@ -231,7 +231,11 @@ jobs:
         if: steps.llama_build.outputs.status != '0'
         shell: bash
         run: |
-          echo "::error::NedoLM llama iPhone arm64 framework build failed. See NedoLM-Llama-Framework-Diagnostics."
+          echo "===== NedoLM iOS framework build tail ====="
+          tail -n 140 work/llama-framework-build.log || true
+          echo "===== extracted errors ====="
+          grep -E -i '(^|[^a-z])(error:|fatal error:|undefined symbols|ld:|clang: error|cmake error|failed)' work/llama-framework-build.log | tail -n 80 || true
+          echo "::error::NedoLM llama iPhone arm64 framework build failed; compiler/linker tail printed above."
           exit 1
 
       - name: Install NedoLM binary with Silo ABI bridge

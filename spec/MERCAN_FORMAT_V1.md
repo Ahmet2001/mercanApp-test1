@@ -8,23 +8,71 @@ A `.mercan` file is a single self-contained model artifact. Mercan v1 uses GGUF 
 
 The file MUST start with the GGUF magic and MUST use GGUF version 3.
 
-A `.mercan` file MUST NOT contain executable model-bundled code. Runtime behavior is selected by metadata and implemented by libmercan.
+A `.mercan` file MUST NOT contain executable model-bundled code. Runtime behavior is selected by metadata and implemented by the Mercan runtime plus registered Architecture/Tokenizer SDK providers.
 
-## Required Mercan metadata
+## Core Mercan metadata
+
+Every Mercan v1 model MUST provide:
 
 - `mercan.format = "mercan"`
 - `mercan.format_version = 1`
 - `mercan.runtime_abi = 1`
 - `mercan.model_family`
+- `general.architecture`
+
+New exporters SHOULD also write `mercan.tokenizer.type` with the registered Mercan tokenizer provider name. For compatibility with early Mercan v1 artifacts, a runtime MAY use the selected architecture provider's default tokenizer when this key is absent.
+
+Architecture-specific metadata MUST use an architecture-owned namespace. For example, NedoLM uses `nedolm.*`, while a third-party `anka` architecture should use `anka.*`.
+
+## Architecture dispatch
+
+`general.architecture` is the model-family dispatch key used by Architecture SDK v1.
+
+Examples:
+
+```text
+general.architecture = "nedolm"
+general.architecture = "anka"
+```
+
+Mercan core resolves this value through the `mercan_architecture_v1` registry before backend model loading. An unsupported architecture MUST be rejected rather than guessed.
+
+The architecture provider owns validation of its architecture-specific metadata. Tensor graph execution remains backend-managed in Architecture SDK v1; see `docs/ARCHITECTURE_SDK.md`.
+
+## Tokenizer metadata
+
+The tokenizer is data and runtime behavior, not executable model-bundled code. `mercan.tokenizer.type` identifies a registered `mercan_tokenizer_v1` provider when present.
+
+Tokenizer-specific assets MUST live under `mercan.tokenizer.*` or an explicitly documented architecture compatibility key. A tokenizer provider is responsible for validating the metadata/assets it requires.
+
+A tokenizer provider can either implement tokenization through the Mercan Tokenizer SDK callbacks or declare itself backend-managed.
+
+## NedoLM v1 profile
+
+NedoLM/Mercan 0.8B models use:
+
+- `general.architecture = "nedolm"`
+- Architecture SDK provider: `nedolm`
+- Default tokenizer provider: `ndsurf004`
+- tokenizer spec: `NDSRF004`
+
+Existing NedoLM v1 artifacts contain:
+
 - `mercan.tokenizer.spec`
 - `mercan.tokenizer.surface_vocab_sha256`
 - `mercan.tokenizer.surface_vocab` as `ARRAY<UINT8>`
+- compatibility key `nedolm.vocab_sha256`
 
-For NedoLM/Mercan 0.8B v1 the tokenizer spec is `NDSRF004`.
+The runtime MUST verify the NDSRF004 vocabulary identity before tokenization.
+
+NDSRF004 special tokens are:
+
+- PAD = 0
+- BOS = 1
+- EOS = 2
 
 ## NedoLM architecture metadata
 
-- `general.architecture = "nedolm"`
 - `nedolm.vocab_size`
 - `nedolm.context_length`
 - `nedolm.embedding_length`
@@ -44,29 +92,17 @@ For NedoLM/Mercan 0.8B v1 the tokenizer spec is `NDSRF004`.
 
 The MorphFFN widths MUST sum to `nedolm.feed_forward_length` and the MorphFFN layer count MUST NOT exceed the transformer block count.
 
-## Tokenizer
-
-The tokenizer is data, not executable code. `mercan.tokenizer.surface_vocab` contains the exact serialized surface vocabulary bytes required by the tokenizer implementation selected by `mercan.tokenizer.spec`.
-
-The runtime MUST verify `mercan.tokenizer.surface_vocab_sha256` before using the tokenizer asset.
-
-Mercan v1 NDSRF004 models use:
-
-- PAD = 0
-- BOS = 1
-- EOS = 2
-
 ## Chat template
 
 Mercan 0.8B SFT models use `chatml_tr`:
 
-```
+```text
 <|im_start|>{role}\n{content}<|im_end|>\n
 ```
 
 The training corpus adds EOS once at the end of a conversation. The runtime/CLI may construct prompts from this template but the model file remains the source of tokenizer and architecture truth.
 
-## Tensor names
+## NedoLM tensor names
 
 Mercan v1 NedoLM tensor names follow the llama.cpp-compatible NedoLM mapping, including:
 
@@ -81,9 +117,13 @@ Mercan v1 NedoLM tensor names follow the llama.cpp-compatible NedoLM mapping, in
 - `output_norm.weight`
 - `blk.0.ffn_gate_tid2eid.weight` for the token-role table
 
+Other architectures define their own tensor namespace/mapping through their architecture profile and backend implementation.
+
 ## Compatibility
 
 `mercan.runtime_abi` is the native runtime ABI generation. A runtime MUST reject an unsupported ABI or unsupported format version instead of guessing.
+
+Architecture SDK and Tokenizer SDK each have their own versioned ABI constants. Model format compatibility and plugin ABI compatibility are separate concerns.
 
 GGUF is an implementation detail of Mercan v1. Future `.mercan` versions may change the physical container while preserving the higher-level Mercan runtime contract.
 
@@ -98,4 +138,4 @@ mercan run owner/model-repo
 
 For Hugging Face repositories, the default artifact name is `model.mercan`. A repository can also be addressed as `owner/repo:filename.mercan`.
 
-Server functionality is out of scope for v1. The CLI and `libmercan` native runtime are in scope.
+Server functionality and a stable external shared-object plugin loader are out of scope for format v1. The portable model contract, `libmercan`, and the in-process Architecture/Tokenizer SDK registries are in scope.

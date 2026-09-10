@@ -1,4 +1,6 @@
 #include "mercan.h"
+#include "mercan_arch.h"
+#include "mercan_tokenizer.h"
 
 #include <algorithm>
 #include <cmath>
@@ -245,6 +247,8 @@ static void print_help() {
         << "Usage:\n"
         << "  mercan run <model.mercan|owner/repo[:file.mercan]> [options]\n"
         << "  mercan pull <owner/repo[:file.mercan]>\n"
+        << "  mercan arch list\n"
+        << "  mercan tokenizer list\n"
         << "  mercan --version\n\n"
         << "Run options:\n"
         << "  -p, --prompt TEXT       single-shot prompt (otherwise interactive)\n"
@@ -323,6 +327,42 @@ static int command_run(int argc, char ** argv) {
     return 0;
 }
 
+static int command_arch(int argc, char ** argv) {
+    if (argc != 3 || std::string(argv[2]) != "list") {
+        die("usage: mercan arch list");
+    }
+    const size_t count = mercan_arch_count_v1();
+    std::cout << "Mercan Architecture SDK ABI " << MERCAN_ARCH_ABI_VERSION << "\n";
+    for (size_t i = 0; i < count; ++i) {
+        const mercan_architecture_v1 * arch = mercan_arch_at_v1(i);
+        if (!arch) continue;
+        std::cout << arch->name;
+        if (arch->display_name && *arch->display_name) std::cout << "\t" << arch->display_name;
+        if (arch->default_tokenizer && *arch->default_tokenizer) std::cout << "\ttokenizer=" << arch->default_tokenizer;
+        if (arch->flags & MERCAN_ARCH_BUILTIN) std::cout << "\tbuiltin";
+        std::cout << "\n";
+    }
+    return 0;
+}
+
+static int command_tokenizer(int argc, char ** argv) {
+    if (argc != 3 || std::string(argv[2]) != "list") {
+        die("usage: mercan tokenizer list");
+    }
+    const size_t count = mercan_tokenizer_count_v1();
+    std::cout << "Mercan Tokenizer SDK ABI " << MERCAN_TOKENIZER_ABI_VERSION << "\n";
+    for (size_t i = 0; i < count; ++i) {
+        const mercan_tokenizer_v1 * tok = mercan_tokenizer_at_v1(i);
+        if (!tok) continue;
+        std::cout << tok->name;
+        if (tok->display_name && *tok->display_name) std::cout << "\t" << tok->display_name;
+        if (tok->flags & MERCAN_TOKENIZER_BACKEND_MANAGED) std::cout << "\tbackend-managed";
+        if (tok->flags & MERCAN_TOKENIZER_BUILTIN) std::cout << "\tbuiltin";
+        std::cout << "\n";
+    }
+    return 0;
+}
+
 int main(int argc, char ** argv) {
     if (argc < 2) { print_help(); return 0; }
     const std::string cmd = argv[1];
@@ -336,6 +376,8 @@ int main(int argc, char ** argv) {
         return 0;
     }
     if (cmd == "-h" || cmd == "--help" || cmd == "help") { print_help(); return 0; }
+    if (cmd == "arch") return command_arch(argc, argv);
+    if (cmd == "tokenizer") return command_tokenizer(argc, argv);
     if (cmd == "pull") {
         if (argc < 3) die("missing Hugging Face repository");
         const auto p = pull_hf(parse_hf_spec(argv[2]), argc > 3 && std::string(argv[3]) == "--force");

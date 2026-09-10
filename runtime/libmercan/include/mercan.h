@@ -50,6 +50,8 @@ MERCAN_API mercan_context_params mercan_context_default_params(void);
 
 MERCAN_API mercan_model * mercan_model_load(const char * path, mercan_model_params params);
 MERCAN_API void mercan_model_free(mercan_model * model);
+MERCAN_API const char * mercan_model_architecture(const mercan_model * model);
+MERCAN_API const char * mercan_model_tokenizer(const mercan_model * model);
 
 MERCAN_API mercan_context * mercan_context_create(mercan_model * model, mercan_context_params params);
 MERCAN_API void mercan_context_free(mercan_context * ctx);

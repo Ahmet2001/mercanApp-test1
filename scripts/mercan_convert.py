@@ -301,6 +301,7 @@ def build_metadata(
         ("mercan.base_checkpoint", GGUF_TYPE_STRING, base_checkpoint),
         ("mercan.chat_template", GGUF_TYPE_STRING, "chatml_tr"),
         ("mercan.chat_template_spec", GGUF_TYPE_STRING, "<|im_start|>{rol}\\n{content}<|im_end|>\\n; EOS once at conversation end"),
+        ("mercan.tokenizer.type", GGUF_TYPE_STRING, "ndsurf004"),
         ("mercan.tokenizer.spec", GGUF_TYPE_STRING, "NDSRF004"),
         ("mercan.tokenizer.surface_vocab_sha256", GGUF_TYPE_STRING, vocab_sha),
         ("mercan.tokenizer.surface_vocab", GGUF_TYPE_ARRAY, (GGUF_TYPE_UINT8, vocab_bytes)),

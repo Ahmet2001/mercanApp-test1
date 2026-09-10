@@ -43,6 +43,8 @@ export PATH="$HOME/.local/bin:$PATH"
 ```text
 mercan run <model.mercan|owner/repo[:file.mercan]>
 mercan pull <owner/repo[:file.mercan]>
+mercan arch list
+mercan tokenizer list
 mercan --version
 ```
 
@@ -90,9 +92,11 @@ PyTorch / Hugging Face checkpoint
  NedoLM + exact NDSRF004 tokenizer
 ```
 
-`.mercan` v1 is a self-contained deployment artifact. It uses GGUF v3 as its physical tensor container but adds a Mercan compatibility contract and embeds the exact tokenizer surface-vocabulary bytes. No executable model-bundled code is stored in the model file.
+`.mercan` v1 is a self-contained deployment artifact. It uses GGUF v3 as its physical tensor container but adds a Mercan compatibility contract and embeds tokenizer assets/identity metadata. No executable model-bundled code is stored in the model file.
 
-See `spec/MERCAN_FORMAT_V1.md`.
+Mercan also ships Architecture SDK v1. `libmercan` reads `general.architecture` before backend loading, resolves a registered `mercan_architecture_v1`, validates the model, then resolves a `mercan_tokenizer_v1`. NedoLM/NDSRF004 are the first built-in providers rather than special cases in Mercan model dispatch.
+
+See `spec/MERCAN_FORMAT_V1.md` and `docs/ARCHITECTURE_SDK.md`.
 
 ## Build from source
 
@@ -123,7 +127,10 @@ The build script checks out the pinned llama.cpp commit, builds the NDSRF004 Rus
 
 ```text
 cli/main.cpp                         user-facing CLI
-runtime/libmercan/                   stable native C ABI
+runtime/libmercan/                   stable native C ABI + SDK headers
+core/                                architecture/tokenizer registry + metadata dispatch
+architectures/nedolm/                built-in NedoLM/NDSRF004 SDK providers
+examples/custom_arch/                third-party architecture provider template
 runtime/nedolm/nedolm.cpp            NedoLM graph implementation
 runtime/nedolm/nedolm-llama.patch    llama.cpp integration
 runtime/nedo004-ffi/                 exact tokenizer bridge
@@ -157,6 +164,14 @@ python scripts/upload_hf.py /path/to/model.mercan --repo MercanAI/Mercan-0.8B-SF
 
 The CLI expects `model.mercan` as the default artifact when a Hugging Face repository name is passed to `mercan run`.
 
+## Architecture SDK v1
+
+Custom families register through the versioned public descriptors in `mercan_arch.h` and `mercan_tokenizer.h`. Model dispatch no longer needs per-family branches inside `mercan.cpp`.
+
+Architecture SDK v1 deliberately keeps tensor graph execution backend-managed. A completely new neural architecture currently needs a Mercan architecture provider **and** graph/tensor support in the compiled backend. The future graph ABI will introduce Mercan-owned graph abstractions before external `.so` architecture plugins are declared stable.
+
+See `docs/ARCHITECTURE_SDK.md` and `examples/custom_arch/`.
+
 ## Current v1 scope
 
-Mercan v1 includes the portable model format, converter, exact tokenizer bridge, native runtime ABI, local/Hugging Face CLI workflow and Linux packaging. An HTTP server/API layer is intentionally left for a later stage.
+Mercan v1 includes the portable model format, converter, exact tokenizer bridge, native runtime ABI, Architecture/Tokenizer SDK registries, local/Hugging Face CLI workflow and Linux packaging. An HTTP server/API layer and stable external shared-object plugin loader are intentionally left for later stages.

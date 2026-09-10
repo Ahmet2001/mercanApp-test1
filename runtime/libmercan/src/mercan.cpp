@@ -1,4 +1,7 @@
 #include "mercan.h"
+#include "mercan_arch.h"
+#include "mercan_tokenizer.h"
+#include "mercan_internal.hpp"
 #include "llama.h"
 
 #include <algorithm>
@@ -12,6 +15,11 @@
 
 struct mercan_model {
     llama_model * impl = nullptr;
+    const mercan_architecture_v1 * architecture = nullptr;
+    const mercan_tokenizer_v1 * tokenizer = nullptr;
+    void * tokenizer_state = nullptr;
+    std::string architecture_name;
+    std::string tokenizer_name;
 };
 
 struct mercan_context {
@@ -45,6 +53,7 @@ const char * mercan_last_error(void) {
 
 void mercan_backend_init(void) {
     g_last_error.clear();
+    mercan_ensure_builtin_plugins();
     llama_log_set(mercan_llama_log, nullptr);
     llama_backend_init();
 }
@@ -78,6 +87,65 @@ mercan_model * mercan_model_load(const char * path, mercan_model_params params) 
         return nullptr;
     }
     try {
+        mercan_ensure_builtin_plugins();
+
+        mercan_metadata_probe metadata;
+        std::string metadata_error;
+        if (!mercan_metadata_open(path, metadata, metadata_error)) {
+            set_error(metadata_error);
+            return nullptr;
+        }
+
+        std::string arch_name = mercan_metadata_string(&metadata.view, "general.architecture");
+        const mercan_architecture_v1 * arch = nullptr;
+        if (!arch_name.empty()) {
+            arch = mercan_arch_find_v1(arch_name.c_str());
+        } else {
+            int best_score = 0;
+            for (size_t i = 0; i < mercan_arch_count_v1(); ++i) {
+                const mercan_architecture_v1 * candidate = mercan_arch_at_v1(i);
+                if (!candidate || !candidate->probe) continue;
+                const int score = candidate->probe(&metadata.view);
+                if (score > best_score) {
+                    best_score = score;
+                    arch = candidate;
+                }
+            }
+            if (arch) arch_name = arch->name;
+        }
+
+        if (!arch) {
+            set_error(arch_name.empty()
+                ? "model architecture is missing and no Mercan Architecture SDK plugin matched"
+                : "unsupported Mercan architecture '" + arch_name + "' (register a mercan_architecture_v1 provider)");
+            return nullptr;
+        }
+
+        if (arch->validate) {
+            char error[512] = {};
+            if (arch->validate(&metadata.view, error, sizeof(error)) != 0) {
+                set_error(std::string("architecture '") + arch->name + "' rejected model: " + (error[0] ? error : "validation failed"));
+                return nullptr;
+            }
+        }
+
+        std::string tokenizer_name = mercan_metadata_string(&metadata.view, "mercan.tokenizer.type");
+        if (tokenizer_name.empty() && arch->default_tokenizer) tokenizer_name = arch->default_tokenizer;
+
+        const mercan_tokenizer_v1 * tokenizer = nullptr;
+        if (!tokenizer_name.empty()) tokenizer = mercan_tokenizer_find_v1(tokenizer_name.c_str());
+        if (!tokenizer && !tokenizer_name.empty()) {
+            set_error("unsupported Mercan tokenizer '" + tokenizer_name + "' (register a mercan_tokenizer_v1 provider)");
+            return nullptr;
+        }
+        if (tokenizer && tokenizer->validate) {
+            char error[512] = {};
+            if (tokenizer->validate(&metadata.view, error, sizeof(error)) != 0) {
+                set_error(std::string("tokenizer '") + tokenizer->name + "' rejected model: " + (error[0] ? error : "validation failed"));
+                return nullptr;
+            }
+        }
+
         llama_model_params lp = llama_model_default_params();
         lp.n_gpu_layers = params.n_gpu_layers;
         lp.load_mode = params.use_mmap ? LLAMA_LOAD_MODE_MMAP : LLAMA_LOAD_MODE_NONE;
@@ -85,11 +153,28 @@ mercan_model * mercan_model_load(const char * path, mercan_model_params params) 
 
         llama_model * lm = llama_model_load_from_file(path, lp);
         if (!lm) {
-            set_error(std::string("failed to load model: ") + path);
+            set_error(std::string("backend failed to load ") + arch->name + " model: " + path);
             return nullptr;
         }
+
+        void * tokenizer_state = nullptr;
+        if (tokenizer && tokenizer->create) {
+            char error[512] = {};
+            tokenizer_state = tokenizer->create(&metadata.view, error, sizeof(error));
+            if (!tokenizer_state) {
+                llama_model_free(lm);
+                set_error(std::string("tokenizer '") + tokenizer->name + " initialization failed: " + (error[0] ? error : "unknown error"));
+                return nullptr;
+            }
+        }
+
         mercan_model * out = new mercan_model();
         out->impl = lm;
+        out->architecture = arch;
+        out->tokenizer = tokenizer;
+        out->tokenizer_state = tokenizer_state;
+        out->architecture_name = arch_name;
+        out->tokenizer_name = tokenizer_name;
         return out;
     } catch (const std::exception & e) {
         set_error(e.what());
@@ -102,8 +187,19 @@ mercan_model * mercan_model_load(const char * path, mercan_model_params params) 
 
 void mercan_model_free(mercan_model * model) {
     if (!model) return;
+    if (model->tokenizer && model->tokenizer->destroy && model->tokenizer_state) {
+        model->tokenizer->destroy(model->tokenizer_state);
+    }
     if (model->impl) llama_model_free(model->impl);
     delete model;
+}
+
+const char * mercan_model_architecture(const mercan_model * model) {
+    return model ? model->architecture_name.c_str() : "";
+}
+
+const char * mercan_model_tokenizer(const mercan_model * model) {
+    return model ? model->tokenizer_name.c_str() : "";
 }
 
 mercan_context * mercan_context_create(mercan_model * model, mercan_context_params params) {
@@ -154,6 +250,9 @@ int32_t mercan_tokenize(
     if (!model || !model->impl || !text) {
         set_error("invalid tokenize arguments");
         return 0;
+    }
+    if (model->tokenizer && model->tokenizer->encode) {
+        return model->tokenizer->encode(model->tokenizer_state, text, text_len, add_special, parse_special, out_tokens, capacity);
     }
     const llama_vocab * vocab = llama_model_get_vocab(model->impl);
     if (!vocab) {
@@ -225,6 +324,9 @@ int32_t mercan_token_to_piece(
     int32_t capacity,
     bool special) {
     if (!model || !model->impl) return 0;
+    if (model->tokenizer && model->tokenizer->decode_piece) {
+        return model->tokenizer->decode_piece(model->tokenizer_state, token, out, capacity, special);
+    }
     const llama_vocab * vocab = llama_model_get_vocab(model->impl);
     if (!vocab) return 0;
     return llama_token_to_piece(vocab, token, out, capacity, 0, special);

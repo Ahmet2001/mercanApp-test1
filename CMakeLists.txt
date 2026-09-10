@@ -22,11 +22,21 @@ set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 
 add_subdirectory("${MERCAN_LLAMA_DIR}" "${CMAKE_BINARY_DIR}/llama" EXCLUDE_FROM_ALL)
 
+set(MERCAN_RUNTIME_SOURCES
+    runtime/libmercan/src/mercan.cpp
+    core/model_loader.cpp
+    core/architecture_registry.cpp
+    core/tokenizer_registry.cpp
+    core/builtin_plugins.cpp
+    architectures/nedolm/architecture.cpp
+    architectures/nedolm/tokenizer.cpp
+)
+
 if(MERCAN_BUILD_SHARED)
-    add_library(libmercan SHARED runtime/libmercan/src/mercan.cpp)
+    add_library(libmercan SHARED ${MERCAN_RUNTIME_SOURCES})
     target_compile_definitions(libmercan PRIVATE MERCAN_BUILD_SHARED=1)
 else()
-    add_library(libmercan STATIC runtime/libmercan/src/mercan.cpp)
+    add_library(libmercan STATIC ${MERCAN_RUNTIME_SOURCES})
 endif()
 set_target_properties(libmercan PROPERTIES OUTPUT_NAME mercan)
 target_include_directories(libmercan
@@ -34,7 +44,9 @@ target_include_directories(libmercan
         $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/runtime/libmercan/include>
         $<INSTALL_INTERFACE:include>
     PRIVATE
-        "${MERCAN_LLAMA_DIR}/include")
+        "${CMAKE_SOURCE_DIR}/core"
+        "${MERCAN_LLAMA_DIR}/include"
+        "${MERCAN_LLAMA_DIR}/ggml/include")
 target_link_libraries(libmercan PUBLIC llama)
 
 add_executable(mercan cli/main.cpp)
@@ -48,4 +60,8 @@ install(TARGETS mercan libmercan
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-install(FILES runtime/libmercan/include/mercan.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(FILES
+    runtime/libmercan/include/mercan.h
+    runtime/libmercan/include/mercan_arch.h
+    runtime/libmercan/include/mercan_tokenizer.h
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

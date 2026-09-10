@@ -15,7 +15,7 @@
 
 namespace fs = std::filesystem;
 
-static constexpr const char * VERSION = "0.1.0";
+static constexpr const char * VERSION = "0.1.1";
 
 static void die(const std::string & message) {
     std::cerr << "mercan: " << message << "\n";
@@ -180,21 +180,20 @@ struct run_options {
     std::string model;
     std::string prompt;
     int max_tokens = 256;
-    float temperature = 0.8f;
+    float temperature = 0.0f;
     int top_k = 40;
     float top_p = 0.95f;
     int threads = 0;
     int gpu_layers = 0;
 };
 
-static std::string generate(mercan_model * model, const run_options & opt, const std::string & user_prompt) {
+static std::string generate(mercan_model * model, const run_options & opt, const std::string & formatted_prompt) {
     mercan_context_params cp = mercan_context_default_params();
     if (opt.threads > 0) cp.n_threads = cp.n_threads_batch = opt.threads;
     mercan_context * ctx = mercan_context_create(model, cp);
     if (!ctx) die(std::string("context creation failed: ") + mercan_last_error());
 
-    const std::string formatted = "<|im_start|>user\n" + user_prompt + "<|im_end|>\n<|im_start|>assistant\n";
-    auto prompt_tokens = tokenize(model, formatted);
+    auto prompt_tokens = tokenize(model, formatted_prompt);
     if (prompt_tokens.empty()) {
         mercan_context_free(ctx);
         die("prompt produced no tokens");
@@ -246,7 +245,7 @@ static void print_help() {
         << "Run options:\n"
         << "  -p, --prompt TEXT       single-shot prompt (otherwise interactive)\n"
         << "  -n, --max-tokens N      maximum generated tokens (default 256)\n"
-        << "  --temperature F         sampling temperature (default 0.8)\n"
+        << "  --temperature F         sampling temperature (default 0; greedy)\n"
         << "  --top-k N               top-k sampling (default 40)\n"
         << "  --top-p F               nucleus cutoff (default 0.95)\n"
         << "  -t, --threads N         CPU threads\n"
@@ -287,16 +286,21 @@ static int command_run(int argc, char ** argv) {
     if (!model) die(std::string("model load failed: ") + mercan_last_error());
 
     if (!opt.prompt.empty()) {
-        std::cout << generate(model, opt, opt.prompt) << "\n";
+        const std::string formatted = "<|im_start|>user\n" + opt.prompt + "<|im_end|>\n<|im_start|>assistant\n";
+        std::cout << generate(model, opt, formatted) << "\n";
     } else {
         std::cout << "Mercan ready. Type /exit to quit.\n\n";
         std::string line;
+        std::string transcript;
         while (true) {
             std::cout << "> " << std::flush;
             if (!std::getline(std::cin, line)) break;
             if (line == "/exit" || line == "/quit") break;
             if (line.empty()) continue;
-            std::cout << generate(model, opt, line) << "\n\n";
+            transcript += "<|im_start|>user\n" + line + "<|im_end|>\n<|im_start|>assistant\n";
+            const std::string answer = generate(model, opt, transcript);
+            std::cout << answer << "\n\n";
+            transcript += answer + "<|im_end|>\n";
         }
     }
 

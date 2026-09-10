@@ -13,7 +13,7 @@ command -v install >/dev/null 2>&1 || { echo "Mercan installer requires install 
 ARCH="$(uname -m)"
 case "$ARCH" in
   x86_64|amd64) ;;
-  *) echo "Mercan v0.1.0 currently supports Linux x86_64 only (detected: $ARCH)." >&2; exit 1 ;;
+  *) echo "Mercan v0.1.x currently supports Linux x86_64 only (detected: $ARCH)." >&2; exit 1 ;;
 esac
 
 TMP="$(mktemp -d)"

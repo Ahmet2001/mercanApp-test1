@@ -2,6 +2,8 @@
 #include "llama.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <string>
@@ -23,10 +25,18 @@ static void set_error(const std::string & s) {
     g_last_error = s;
 }
 
+static void mercan_llama_log(enum ggml_log_level level, const char * text, void *) {
+    const char * verbose = std::getenv("MERCAN_VERBOSE");
+    const bool show_all = verbose && *verbose && std::strcmp(verbose, "0") != 0;
+    if (show_all || level == GGML_LOG_LEVEL_ERROR) {
+        if (text) std::fputs(text, stderr);
+    }
+}
+
 extern "C" {
 
 const char * mercan_version(void) {
-    return "0.1.0";
+    return "0.1.1";
 }
 
 const char * mercan_last_error(void) {
@@ -35,6 +45,7 @@ const char * mercan_last_error(void) {
 
 void mercan_backend_init(void) {
     g_last_error.clear();
+    llama_log_set(mercan_llama_log, nullptr);
     llama_backend_init();
 }
 

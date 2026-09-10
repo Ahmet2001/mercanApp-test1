@@ -1,0 +1,9 @@
+build/
+dist/
+target/
+**/target/
+__pycache__/
+*.pyc
+*.part
+*.tmp
+*.mercan

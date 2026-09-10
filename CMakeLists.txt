@@ -1,0 +1,48 @@
+cmake_minimum_required(VERSION 3.16)
+project(mercan VERSION 0.1.0 LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+set(MERCAN_LLAMA_DIR "${CMAKE_SOURCE_DIR}/build/_deps/llama-src" CACHE PATH "Path to patched llama.cpp source")
+option(MERCAN_BUILD_SHARED "Build libmercan as a shared library" OFF)
+
+if(NOT EXISTS "${MERCAN_LLAMA_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR "Patched llama.cpp not found at ${MERCAN_LLAMA_DIR}. Run scripts/prepare_llama.sh first or set MERCAN_LLAMA_DIR.")
+endif()
+
+# The downloadable Mercan CLI must not require separate llama/ggml shared libraries.
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+
+add_subdirectory("${MERCAN_LLAMA_DIR}" "${CMAKE_BINARY_DIR}/llama" EXCLUDE_FROM_ALL)
+
+if(MERCAN_BUILD_SHARED)
+    add_library(libmercan SHARED runtime/libmercan/src/mercan.cpp)
+    target_compile_definitions(libmercan PRIVATE MERCAN_BUILD_SHARED=1)
+else()
+    add_library(libmercan STATIC runtime/libmercan/src/mercan.cpp)
+endif()
+set_target_properties(libmercan PROPERTIES OUTPUT_NAME mercan)
+target_include_directories(libmercan
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/runtime/libmercan/include>
+        $<INSTALL_INTERFACE:include>
+    PRIVATE
+        "${MERCAN_LLAMA_DIR}/include")
+target_link_libraries(libmercan PUBLIC llama)
+
+add_executable(mercan cli/main.cpp)
+target_link_libraries(mercan PRIVATE libmercan)
+
+include(GNUInstallDirs)
+install(TARGETS mercan libmercan
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(FILES runtime/libmercan/include/mercan.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

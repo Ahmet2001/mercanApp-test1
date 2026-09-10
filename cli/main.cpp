@@ -1,0 +1,325 @@
+#include "mercan.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <limits>
+#include <random>
+#include <sstream>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace fs = std::filesystem;
+
+static constexpr const char * VERSION = "0.1.0";
+
+static void die(const std::string & message) {
+    std::cerr << "mercan: " << message << "\n";
+    std::exit(1);
+}
+
+static std::string cache_root() {
+    if (const char * p = std::getenv("MERCAN_CACHE")) return p;
+    if (const char * p = std::getenv("XDG_CACHE_HOME")) return (fs::path(p) / "mercan").string();
+    if (const char * p = std::getenv("HOME")) return (fs::path(p) / ".cache" / "mercan").string();
+    return ".mercan-cache";
+}
+
+static bool safe_hf_component(const std::string & s, bool allow_slash) {
+    if (s.empty()) return false;
+    for (unsigned char c : s) {
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') continue;
+        if (allow_slash && c == '/') continue;
+        return false;
+    }
+    return true;
+}
+
+struct hf_spec {
+    std::string repo;
+    std::string filename = "model.mercan";
+};
+
+static hf_spec parse_hf_spec(const std::string & input) {
+    hf_spec out;
+    const auto colon = input.find(':');
+    out.repo = colon == std::string::npos ? input : input.substr(0, colon);
+    if (colon != std::string::npos) out.filename = input.substr(colon + 1);
+
+    const auto slash = out.repo.find('/');
+    if (slash == std::string::npos || slash == 0 || slash + 1 >= out.repo.size() ||
+        out.repo.find('/', slash + 1) != std::string::npos) {
+        die("Hugging Face model must be owner/repo or owner/repo:filename.mercan");
+    }
+    if (!safe_hf_component(out.repo, true) || !safe_hf_component(out.filename, false)) {
+        die("invalid characters in Hugging Face model reference");
+    }
+    if (out.filename.size() < 7 || out.filename.substr(out.filename.size() - 7) != ".mercan") {
+        die("Hugging Face artifact must end in .mercan");
+    }
+    return out;
+}
+
+static fs::path pull_hf(const hf_spec & spec, bool force = false) {
+    fs::path dst = fs::path(cache_root()) / "huggingface" / spec.repo / spec.filename;
+    if (!force && fs::exists(dst) && fs::file_size(dst) > 0) {
+        std::cout << "Using cached model: " << dst << "\n";
+        return dst;
+    }
+
+    fs::create_directories(dst.parent_path());
+    fs::path tmp = dst;
+    tmp += ".part";
+    std::error_code ec;
+    fs::remove(tmp, ec);
+
+    const std::string url = "https://huggingface.co/" + spec.repo + "/resolve/main/" + spec.filename + "?download=true";
+    std::cout << "Pulling " << spec.repo << "/" << spec.filename << " from Hugging Face...\n";
+
+#ifdef _WIN32
+    const std::string cmd = "curl.exe -fL --retry 3 --connect-timeout 20 -o \"" + tmp.string() + "\" \"" + url + "\"";
+#else
+    const std::string cmd = "curl -fL --retry 3 --connect-timeout 20 -o '" + tmp.string() + "' '" + url + "'";
+#endif
+    const int rc = std::system(cmd.c_str());
+    if (rc != 0 || !fs::exists(tmp) || fs::file_size(tmp) == 0) {
+        fs::remove(tmp, ec);
+        die("download failed; make sure curl is installed and the Hugging Face repository is public");
+    }
+    fs::rename(tmp, dst, ec);
+    if (ec) {
+        fs::remove(dst, ec);
+        ec.clear();
+        fs::rename(tmp, dst, ec);
+    }
+    if (ec) die("could not move downloaded model into cache: " + ec.message());
+
+    std::cout << "Saved: " << dst << "\n";
+    return dst;
+}
+
+static fs::path resolve_model(const std::string & input) {
+    fs::path p(input);
+    if (fs::exists(p)) return fs::absolute(p);
+    return pull_hf(parse_hf_spec(input));
+}
+
+static std::vector<mercan_token> tokenize(mercan_model * model, const std::string & text) {
+    int32_t n = mercan_tokenize(model, text.data(), text.size(), false, false, nullptr, 0);
+    if (n == 0 && !text.empty()) die(std::string("tokenization failed: ") + mercan_last_error());
+    if (n < 0) n = -n;
+    std::vector<mercan_token> tokens(static_cast<size_t>(std::max(1, n)));
+    int32_t got = mercan_tokenize(model, text.data(), text.size(), false, false, tokens.data(), static_cast<int32_t>(tokens.size()));
+    if (got < 0) {
+        tokens.resize(static_cast<size_t>(-got));
+        got = mercan_tokenize(model, text.data(), text.size(), false, false, tokens.data(), static_cast<int32_t>(tokens.size()));
+    }
+    if (got < 0) die("token buffer sizing failed");
+    tokens.resize(static_cast<size_t>(got));
+    return tokens;
+}
+
+static std::string token_piece(mercan_model * model, mercan_token token) {
+    char small[64];
+    int32_t n = mercan_token_to_piece(model, token, small, sizeof(small), false);
+    if (n >= 0 && n <= static_cast<int32_t>(sizeof(small))) return std::string(small, small + n);
+    if (n < 0) {
+        std::vector<char> buf(static_cast<size_t>(-n));
+        n = mercan_token_to_piece(model, token, buf.data(), static_cast<int32_t>(buf.size()), false);
+        if (n >= 0) return std::string(buf.data(), buf.data() + n);
+    }
+    return {};
+}
+
+static mercan_token sample_token(const float * logits, int32_t n_vocab, float temperature, int top_k, float top_p, std::mt19937 & rng) {
+    if (!logits || n_vocab <= 0) die("no logits available");
+    if (temperature <= 0.0f) {
+        return static_cast<mercan_token>(std::max_element(logits, logits + n_vocab) - logits);
+    }
+
+    top_k = std::max(1, std::min(top_k, n_vocab));
+    std::vector<std::pair<float, int32_t>> ranked;
+    ranked.reserve(static_cast<size_t>(n_vocab));
+    for (int32_t i = 0; i < n_vocab; ++i) ranked.emplace_back(logits[i], i);
+    std::partial_sort(ranked.begin(), ranked.begin() + top_k, ranked.end(),
+        [](const auto & a, const auto & b) { return a.first > b.first; });
+    ranked.resize(static_cast<size_t>(top_k));
+
+    const float max_logit = ranked.front().first;
+    std::vector<double> weights;
+    weights.reserve(ranked.size());
+    double total = 0.0;
+    for (const auto & x : ranked) {
+        const double w = std::exp((static_cast<double>(x.first) - max_logit) / temperature);
+        weights.push_back(w);
+        total += w;
+    }
+
+    if (top_p > 0.0f && top_p < 1.0f && total > 0.0) {
+        double cumulative = 0.0;
+        size_t keep = 0;
+        for (; keep < weights.size(); ++keep) {
+            cumulative += weights[keep] / total;
+            if (cumulative >= top_p) { ++keep; break; }
+        }
+        keep = std::max<size_t>(1, std::min(keep, weights.size()));
+        ranked.resize(keep);
+        weights.resize(keep);
+    }
+
+    std::discrete_distribution<size_t> dist(weights.begin(), weights.end());
+    return static_cast<mercan_token>(ranked[dist(rng)].second);
+}
+
+struct run_options {
+    std::string model;
+    std::string prompt;
+    int max_tokens = 256;
+    float temperature = 0.8f;
+    int top_k = 40;
+    float top_p = 0.95f;
+    int threads = 0;
+    int gpu_layers = 0;
+};
+
+static std::string generate(mercan_model * model, const run_options & opt, const std::string & user_prompt) {
+    mercan_context_params cp = mercan_context_default_params();
+    if (opt.threads > 0) cp.n_threads = cp.n_threads_batch = opt.threads;
+    mercan_context * ctx = mercan_context_create(model, cp);
+    if (!ctx) die(std::string("context creation failed: ") + mercan_last_error());
+
+    const std::string formatted = "<|im_start|>user\n" + user_prompt + "<|im_end|>\n<|im_start|>assistant\n";
+    auto prompt_tokens = tokenize(model, formatted);
+    if (prompt_tokens.empty()) {
+        mercan_context_free(ctx);
+        die("prompt produced no tokens");
+    }
+
+    const int batch_size = 512;
+    for (size_t i = 0; i < prompt_tokens.size();) {
+        const int n = static_cast<int>(std::min<size_t>(batch_size, prompt_tokens.size() - i));
+        if (mercan_decode(ctx, prompt_tokens.data() + i, n) != 0) {
+            const std::string err = mercan_last_error();
+            mercan_context_free(ctx);
+            die("prompt decode failed: " + err);
+        }
+        i += static_cast<size_t>(n);
+    }
+
+    std::random_device rd;
+    std::mt19937 rng(rd());
+    std::string text;
+    const int32_t n_vocab = mercan_vocab_size(model);
+    const mercan_token eos = mercan_eos_token(model);
+
+    for (int i = 0; i < opt.max_tokens; ++i) {
+        mercan_token next = sample_token(mercan_logits(ctx), n_vocab, opt.temperature, opt.top_k, opt.top_p, rng);
+        if (next == eos) break;
+        const std::string piece = token_piece(model, next);
+        text += piece;
+
+        const auto stop = text.find("<|im_end|>");
+        if (stop != std::string::npos) {
+            text.resize(stop);
+            break;
+        }
+
+        if (mercan_decode(ctx, &next, 1) != 0) break;
+    }
+
+    mercan_context_free(ctx);
+    return text;
+}
+
+static void print_help() {
+    std::cout
+        << "Mercan CLI " << VERSION << "\n\n"
+        << "Usage:\n"
+        << "  mercan run <model.mercan|owner/repo[:file.mercan]> [options]\n"
+        << "  mercan pull <owner/repo[:file.mercan]>\n"
+        << "  mercan --version\n\n"
+        << "Run options:\n"
+        << "  -p, --prompt TEXT       single-shot prompt (otherwise interactive)\n"
+        << "  -n, --max-tokens N      maximum generated tokens (default 256)\n"
+        << "  --temperature F         sampling temperature (default 0.8)\n"
+        << "  --top-k N               top-k sampling (default 40)\n"
+        << "  --top-p F               nucleus cutoff (default 0.95)\n"
+        << "  -t, --threads N         CPU threads\n"
+        << "  --gpu-layers N          layers offloaded through llama.cpp backend\n\n"
+        << "Examples:\n"
+        << "  mercan run model.mercan\n"
+        << "  mercan run Ahmet2001/Mercan-0.8B-SFT\n"
+        << "  mercan run Ahmet2001/Mercan-0.8B-SFT:model-q4.mercan -p \"Merhaba\"\n";
+}
+
+static int command_run(int argc, char ** argv) {
+    if (argc < 3) die("missing model; try 'mercan run --help'");
+    run_options opt;
+    opt.model = argv[2];
+    for (int i = 3; i < argc; ++i) {
+        std::string a = argv[i];
+        auto need = [&](const char * flag) -> std::string {
+            if (++i >= argc) die(std::string("missing value for ") + flag);
+            return argv[i];
+        };
+        if (a == "-p" || a == "--prompt") opt.prompt = need(a.c_str());
+        else if (a == "-n" || a == "--max-tokens") opt.max_tokens = std::stoi(need(a.c_str()));
+        else if (a == "--temperature") opt.temperature = std::stof(need(a.c_str()));
+        else if (a == "--top-k") opt.top_k = std::stoi(need(a.c_str()));
+        else if (a == "--top-p") opt.top_p = std::stof(need(a.c_str()));
+        else if (a == "-t" || a == "--threads") opt.threads = std::stoi(need(a.c_str()));
+        else if (a == "--gpu-layers") opt.gpu_layers = std::stoi(need(a.c_str()));
+        else if (a == "-h" || a == "--help") { print_help(); return 0; }
+        else die("unknown option: " + a);
+    }
+
+    fs::path model_path = resolve_model(opt.model);
+    mercan_backend_init();
+    mercan_model_params mp = mercan_model_default_params();
+    mp.n_gpu_layers = opt.gpu_layers;
+    std::cout << "Loading " << model_path << "...\n";
+    mercan_model * model = mercan_model_load(model_path.string().c_str(), mp);
+    if (!model) die(std::string("model load failed: ") + mercan_last_error());
+
+    if (!opt.prompt.empty()) {
+        std::cout << generate(model, opt, opt.prompt) << "\n";
+    } else {
+        std::cout << "Mercan ready. Type /exit to quit.\n\n";
+        std::string line;
+        while (true) {
+            std::cout << "> " << std::flush;
+            if (!std::getline(std::cin, line)) break;
+            if (line == "/exit" || line == "/quit") break;
+            if (line.empty()) continue;
+            std::cout << generate(model, opt, line) << "\n\n";
+        }
+    }
+
+    mercan_model_free(model);
+    mercan_backend_free();
+    return 0;
+}
+
+int main(int argc, char ** argv) {
+    if (argc < 2) { print_help(); return 0; }
+    const std::string cmd = argv[1];
+    if (cmd == "--version" || cmd == "version") {
+        std::cout << "mercan " << VERSION << " (libmercan " << mercan_version() << ")\n";
+        return 0;
+    }
+    if (cmd == "-h" || cmd == "--help" || cmd == "help") { print_help(); return 0; }
+    if (cmd == "pull") {
+        if (argc < 3) die("missing Hugging Face repository");
+        const auto p = pull_hf(parse_hf_spec(argv[2]), argc > 3 && std::string(argv[3]) == "--force");
+        std::cout << p << "\n";
+        return 0;
+    }
+    if (cmd == "run") return command_run(argc, argv);
+    die("unknown command: " + cmd);
+    return 1;
+}

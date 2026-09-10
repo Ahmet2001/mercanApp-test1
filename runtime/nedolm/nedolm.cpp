@@ -1,19 +1,30 @@
 #include "models.h"
 
-namespace {
-constexpr int NEDOLM_MORPH_LAYERS = 18;
-constexpr int64_t NEDOLM_SHARED = 4224;
-constexpr int64_t NEDOLM_ROOT = 704;
-constexpr int64_t NEDOLM_SUFFIX = 704;
-}
-
 void llama_model_nedolm::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
     ml.get_key(LLM_KV_ATTENTION_SLIDING_WINDOW, hparams.n_swa);
 
+    ml.get_key("nedolm.morph.layer_count", morph_layer_count);
+    ml.get_key("nedolm.morph.shared_width", morph_shared_width);
+    ml.get_key("nedolm.morph.root_width", morph_root_width);
+    ml.get_key("nedolm.morph.suffix_width", morph_suffix_width);
+
     if (hparams.n_swa == 0) {
         throw std::runtime_error("NedoLM requires a positive sliding-window length");
     }
+    if (morph_layer_count > hparams.n_layer()) {
+        throw std::runtime_error("nedolm.morph.layer_count exceeds transformer block count");
+    }
+    if (morph_shared_width == 0 || morph_root_width == 0 || morph_suffix_width == 0) {
+        throw std::runtime_error("NedoLM MorphFFN widths must be positive");
+    }
+    const uint64_t morph_total = static_cast<uint64_t>(morph_shared_width) +
+                                 static_cast<uint64_t>(morph_root_width) +
+                                 static_cast<uint64_t>(morph_suffix_width);
+    if (morph_total != static_cast<uint64_t>(hparams.n_ff())) {
+        throw std::runtime_error("NedoLM MorphFFN widths do not sum to feed_forward_length");
+    }
+
     hparams.swa_type = LLAMA_SWA_TYPE_STANDARD;
     // period=0 means every transformer block is sliding-window attention.
     hparams.set_swa_pattern(0);
@@ -24,9 +35,6 @@ void llama_model_nedolm::load_arch_hparams(llama_model_loader & ml) {
     hparams.rope_freq_base_train_swa = hparams.rope_freq_base_train;
     hparams.rope_freq_scale_train_swa = hparams.rope_freq_scale_train;
 
-    if (hparams.n_layer() != 24 || hparams.n_embd != 1536 || hparams.n_ff() != 5632) {
-        throw std::runtime_error("unexpected NedoLM-0.8B dimensions");
-    }
     type = LLM_TYPE_1B;
 }
 
@@ -52,7 +60,6 @@ void llama_model_nedolm::load_arch_tensors(llama_model_loader &) {
     }
 
     // One shared 2 x vocab lookup table: [is_root, is_suffix] for every token id.
-    // Existing GET_ROWS tensor slot is reused so quantization/offload semantics are already correct.
     layers[0].ffn_gate_tid2eid = create_tensor(
         tn(LLM_TENSOR_FFN_GATE_TID2EID, "weight", 0), {2, n_vocab}, 0);
 }
@@ -63,10 +70,15 @@ std::unique_ptr<llm_graph_context> llama_model_nedolm::build_arch_graph(const ll
 
 llama_model_nedolm::graph::graph(const llama_model & model, const llm_graph_params & params)
     : llm_graph_context(params) {
+    const auto & nedolm = static_cast<const llama_model_nedolm &>(model);
+    const int64_t morph_shared = static_cast<int64_t>(nedolm.morph_shared_width);
+    const int64_t morph_root = static_cast<int64_t>(nedolm.morph_root_width);
+    const int64_t morph_suffix = static_cast<int64_t>(nedolm.morph_suffix_width);
+
     const int64_t n_embd_head = hparams.n_embd_head_v();
     GGML_ASSERT(n_embd_head == hparams.n_embd_head_k());
     GGML_ASSERT(n_embd_head == n_rot);
-    GGML_ASSERT(hparams.n_ff() == NEDOLM_SHARED + NEDOLM_ROOT + NEDOLM_SUFFIX);
+    GGML_ASSERT(hparams.n_ff() == morph_shared + morph_root + morph_suffix);
 
     ggml_tensor * inpL = build_inp_embd(model.tok_embd);
     ggml_tensor * inp_tokens = res->t_inp_tokens;
@@ -111,15 +123,15 @@ llama_model_nedolm::graph::graph(const llama_model & model, const llm_graph_para
         cur = build_norm(ffn_inp, model.layers[il].ffn_norm, nullptr, LLM_NORM_RMS, il);
         cb(cur, "ffn_norm", il);
 
-        if (il < NEDOLM_MORPH_LAYERS) {
+        if (il < static_cast<int>(nedolm.morph_layer_count)) {
             ggml_tensor * up = build_lora_mm(model.layers[il].ffn_up, cur);
             ggml_tensor * gate = build_lora_mm(model.layers[il].ffn_gate, cur);
             ggml_tensor * z = ggml_swiglu_split(ctx0, gate, up);
             cb(z, "nedolm_swiglu", il);
 
-            ggml_tensor * shared = ggml_view_2d(ctx0, z, NEDOLM_SHARED, z->ne[1], z->nb[1], 0);
-            ggml_tensor * root = ggml_view_2d(ctx0, z, NEDOLM_ROOT, z->ne[1], z->nb[1], NEDOLM_SHARED * z->nb[0]);
-            ggml_tensor * suffix = ggml_view_2d(ctx0, z, NEDOLM_SUFFIX, z->ne[1], z->nb[1], (NEDOLM_SHARED + NEDOLM_ROOT) * z->nb[0]);
+            ggml_tensor * shared = ggml_view_2d(ctx0, z, morph_shared, z->ne[1], z->nb[1], 0);
+            ggml_tensor * root = ggml_view_2d(ctx0, z, morph_root, z->ne[1], z->nb[1], morph_shared * z->nb[0]);
+            ggml_tensor * suffix = ggml_view_2d(ctx0, z, morph_suffix, z->ne[1], z->nb[1], (morph_shared + morph_root) * z->nb[0]);
 
             ggml_tensor * root_gate = ggml_view_2d(ctx0, role_mask, 1, role_mask->ne[1], role_mask->nb[1], 0);
             ggml_tensor * suffix_gate = ggml_view_2d(ctx0, role_mask, 1, role_mask->ne[1], role_mask->nb[1], role_mask->nb[0]);

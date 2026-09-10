@@ -1,0 +1,57 @@
+name: Mercan Linux CLI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux-x86_64:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build curl git pkg-config
+          if ! command -v cargo >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustc --version
+          cargo --version
+
+      - name: Build Mercan CLI
+        env:
+          MERCAN_JOBS: '2'
+        run: |
+          chmod +x scripts/prepare_llama.sh scripts/build_linux.sh install.sh
+          ./scripts/build_linux.sh
+          ./dist/mercan-linux-x86_64/bin/mercan --version
+          ldd ./dist/mercan-linux-x86_64/bin/mercan || true
+
+      - name: Upload CI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mercan-linux-x86_64
+          path: |
+            dist/mercan-linux-x86_64.tar.gz
+            dist/mercan-linux-x86_64.tar.gz.sha256
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "Mercan ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            dist/mercan-linux-x86_64.tar.gz \
+            dist/mercan-linux-x86_64.tar.gz.sha256

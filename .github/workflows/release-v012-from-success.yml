@@ -1,0 +1,82 @@
+name: Publish Mercan v0.1.2 from verified build
+
+on:
+  push:
+    tags: ['publish-v0.1.2']
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download CPU artifact from successful run
+        uses: actions/download-artifact@v4
+        with:
+          name: mercan-linux-cpu
+          path: release-assets
+          github-token: ${{ github.token }}
+          repository: Ahmet2001/mercanApp-test1
+          run-id: 34531004223
+
+      - name: Download CUDA artifact from successful run
+        uses: actions/download-artifact@v4
+        with:
+          name: mercan-linux-cuda
+          path: release-assets
+          github-token: ${{ github.token }}
+          repository: Ahmet2001/mercanApp-test1
+          run-id: 34531004223
+
+      - name: Verify CUDA package is self-contained
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -lah release-assets
+          test -s release-assets/mercan-linux-x86_64-cuda.tar.gz
+          rm -rf /tmp/mercan-cuda
+          mkdir -p /tmp/mercan-cuda
+          tar -xzf release-assets/mercan-linux-x86_64-cuda.tar.gz -C /tmp/mercan-cuda
+          BIN="$(find /tmp/mercan-cuda -type f -path '*/bin/mercan' -print -quit)"
+          test -n "$BIN"
+          "$BIN" --version
+          echo '=== ldd ==='
+          deps="$(ldd "$BIN" || true)"
+          printf '%s\n' "$deps"
+          if printf '%s\n' "$deps" | grep -Eq 'libcudart|libcublas|libcublasLt|libnccl'; then
+            echo '::error::CUDA artifact requires CUDA Toolkit shared libraries'
+            exit 21
+          fi
+          echo CUDA_ARTIFACT_SELF_CONTAINED_OK
+          sha256sum release-assets/*.tar.gz
+
+      - name: Stop obsolete rebuilds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run cancel 34541435753 --repo "$GITHUB_REPOSITORY" || true
+          gh run cancel 34541433267 --repo "$GITHUB_REPOSITORY" || true
+
+      - name: Publish v0.1.2 release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            release-assets/mercan-linux-x86_64.tar.gz
+            release-assets/mercan-linux-x86_64.tar.gz.sha256
+            release-assets/mercan-linux-x86_64-cpu.tar.gz
+            release-assets/mercan-linux-x86_64-cpu.tar.gz.sha256
+            release-assets/mercan-linux-x86_64-cuda.tar.gz
+            release-assets/mercan-linux-x86_64-cuda.tar.gz.sha256
+          )
+          for f in "${files[@]}"; do test -s "$f"; done
+          if gh release view v0.1.2 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload v0.1.2 --repo "$GITHUB_REPOSITORY" --clobber "${files[@]}"
+          else
+            gh release create v0.1.2 --repo "$GITHUB_REPOSITORY" --title 'Mercan v0.1.2' --generate-notes "${files[@]}"
+          fi
+          echo MERCAN_V012_RELEASE_OK

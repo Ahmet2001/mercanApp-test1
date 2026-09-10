@@ -79,7 +79,13 @@ jobs:
           chmod +x scripts/prepare_llama.sh scripts/build_linux.sh install.sh
           ./scripts/build_linux.sh
           ./dist/mercan-linux-x86_64-cuda/bin/mercan --version
+          echo '=== CUDA binary dynamic dependencies ==='
           ldd ./dist/mercan-linux-x86_64-cuda/bin/mercan || true
+          if ldd ./dist/mercan-linux-x86_64-cuda/bin/mercan 2>/dev/null | grep -Eq 'libcudart|libcublas|libcublasLt|libnccl'; then
+            echo '::error::CUDA package still depends on CUDA Toolkit shared libraries'
+            exit 21
+          fi
+          echo CUDA_SELF_CONTAINED_CHECK_OK
 
       - name: Upload CUDA artifacts
         uses: actions/upload-artifact@v4

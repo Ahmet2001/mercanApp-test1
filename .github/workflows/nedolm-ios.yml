@@ -59,14 +59,14 @@ jobs:
           text = state.read_text()
           start = text.index('    static let defaultModel = Model(')
           end = text.index('    static let lfmSimulatorModel = Model(', start)
-          mercan = '''    static let defaultModel = Model(
-        name: "Mercan 0.8B SFT Q4_K_M (482 MiB)",
-        url: "https://huggingface.co/MercanAI/Mercan-0.8B-SFT/resolve/main/model.mercan?download=true",
-        filename: "Mercan-0.8B-SFT.gguf",
-        status: "download",
-        released: catalogDate(2026, 9, 11))
-
-'''
+          mercan = (
+              '    static let defaultModel = Model(\n'
+              '        name: "Mercan 0.8B SFT Q4_K_M (482 MiB)",\n'
+              '        url: "https://huggingface.co/MercanAI/Mercan-0.8B-SFT/resolve/main/model.mercan?download=true",\n'
+              '        filename: "Mercan-0.8B-SFT.gguf",\n'
+              '        status: "download",\n'
+              '        released: catalogDate(2026, 9, 11))\n\n'
+          )
           text = text[:start] + mercan + text[end:]
           req = '    let modelRequirements: [String: Double] = [\n'
           if req in text:

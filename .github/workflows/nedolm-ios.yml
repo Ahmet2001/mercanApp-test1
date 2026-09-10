@@ -26,18 +26,38 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -s runtime/nedolm-llama.patch || {
-            echo "::error::runtime/nedolm-llama.patch eksik"
+          test -s runtime/nedolm/nedolm-llama.patch || {
+            echo "::error::runtime/nedolm/nedolm-llama.patch eksik"
             exit 2
           }
-          test -s runtime/libnedo004_ffi.a || {
-            echo "::error::runtime/libnedo004_ffi.a eksik"
+          test -s runtime/nedo004-ffi/Cargo.toml || {
+            echo "::error::runtime/nedo004-ffi/Cargo.toml eksik"
+            exit 3
+          }
+          test -s runtime/nedo004-ffi/Cargo.lock || {
+            echo "::error::runtime/nedo004-ffi/Cargo.lock eksik"
             exit 3
           }
           test -s runtime/nedolm/nedolm.cpp || {
             echo "::error::runtime/nedolm/nedolm.cpp eksik"
             exit 4
           }
+
+      - name: Build current NDSRF004 FFI for iPhone arm64
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --version
+          cargo --version
+          rustup target add aarch64-apple-ios
+          cargo build \
+            --manifest-path runtime/nedo004-ffi/Cargo.toml \
+            --locked \
+            --release \
+            --target aarch64-apple-ios
+          FFI="$GITHUB_WORKSPACE/runtime/nedo004-ffi/target/aarch64-apple-ios/release/libnedo004_ffi.a"
+          test -s "$FFI"
+          file "$FFI"
 
       - name: Clone Silo
         shell: bash
@@ -90,8 +110,8 @@ jobs:
           git clone https://github.com/ggml-org/llama.cpp.git work/llama.cpp
           cd work/llama.cpp
           git checkout e71b80510c848c00175924ecf3c40333ccae8eb5
-          git apply --check "$GITHUB_WORKSPACE/runtime/nedolm-llama.patch"
-          git apply "$GITHUB_WORKSPACE/runtime/nedolm-llama.patch"
+          git apply --check "$GITHUB_WORKSPACE/runtime/nedolm/nedolm-llama.patch"
+          git apply "$GITHUB_WORKSPACE/runtime/nedolm/nedolm-llama.patch"
 
           cp "$GITHUB_WORKSPACE/runtime/nedolm/nedolm.cpp" src/models/nedolm.cpp
 
@@ -143,7 +163,7 @@ jobs:
           CPP
 
           mkdir -p vendor/nedo004-ffi/target/release
-          cp "$GITHUB_WORKSPACE/runtime/libnedo004_ffi.a" \
+          cp "$GITHUB_WORKSPACE/runtime/nedo004-ffi/target/aarch64-apple-ios/release/libnedo004_ffi.a" \
              vendor/nedo004-ffi/target/release/libnedo004_ffi.a
 
           python3 - <<'PY'
@@ -166,7 +186,7 @@ jobs:
           set +e
           scripts/build-nedolm-llama-ios.sh \
             "$GITHUB_WORKSPACE/work/llama.cpp" \
-            "$GITHUB_WORKSPACE/runtime/libnedo004_ffi.a" \
+            "$GITHUB_WORKSPACE/runtime/nedo004-ffi/target/aarch64-apple-ios/release/libnedo004_ffi.a" \
             "$GITHUB_WORKSPACE/work/nedolm-llama.xcframework" \
             2>&1 | tee "$GITHUB_WORKSPACE/work/llama-framework-build.log"
           status=${PIPESTATUS[0]}
@@ -211,11 +231,7 @@ jobs:
         if: steps.llama_build.outputs.status != '0'
         shell: bash
         run: |
-          echo "===== NedoLM iOS framework build tail ====="
-          tail -n 140 work/llama-framework-build.log || true
-          echo "===== extracted errors ====="
-          grep -E -i '(^|[^a-z])(error:|fatal error:|undefined symbols|ld:|clang: error|cmake error|failed)' work/llama-framework-build.log | tail -n 80 || true
-          echo "::error::NedoLM llama iPhone arm64 framework build failed; compiler/linker tail printed above."
+          echo "::error::NedoLM llama iPhone arm64 framework build failed. See NedoLM-Llama-Framework-Diagnostics."
           exit 1
 
       - name: Install NedoLM binary with Silo ABI bridge

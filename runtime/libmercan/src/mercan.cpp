@@ -36,7 +36,7 @@ static void mercan_llama_log(enum ggml_log_level level, const char * text, void 
 extern "C" {
 
 const char * mercan_version(void) {
-    return "0.1.1";
+    return "0.1.2";
 }
 
 const char * mercan_last_error(void) {

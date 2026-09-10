@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(mercan VERSION 0.1.1 LANGUAGES C CXX)
+project(mercan VERSION 0.1.2 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -39,6 +39,9 @@ target_link_libraries(libmercan PUBLIC llama)
 
 add_executable(mercan cli/main.cpp)
 target_link_libraries(mercan PRIVATE libmercan)
+if(GGML_CUDA)
+    target_compile_definitions(mercan PRIVATE MERCAN_CUDA_BUILD=1)
+endif()
 
 include(GNUInstallDirs)
 install(TARGETS mercan libmercan

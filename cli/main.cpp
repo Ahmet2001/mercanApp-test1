@@ -15,7 +15,7 @@
 
 namespace fs = std::filesystem;
 
-static constexpr const char * VERSION = "0.1.1";
+static constexpr const char * VERSION = "0.1.2";
 
 static void die(const std::string & message) {
     std::cerr << "mercan: " << message << "\n";
@@ -184,7 +184,11 @@ struct run_options {
     int top_k = 40;
     float top_p = 0.95f;
     int threads = 0;
+#ifdef MERCAN_CUDA_BUILD
+    int gpu_layers = -1;
+#else
     int gpu_layers = 0;
+#endif
 };
 
 static std::string generate(mercan_model * model, const run_options & opt, const std::string & formatted_prompt) {
@@ -249,7 +253,7 @@ static void print_help() {
         << "  --top-k N               top-k sampling (default 40)\n"
         << "  --top-p F               nucleus cutoff (default 0.95)\n"
         << "  -t, --threads N         CPU threads\n"
-        << "  --gpu-layers N          layers offloaded through llama.cpp backend\n\n"
+        << "  --gpu-layers N          GPU layers (-1 = all; CUDA build defaults to -1)\n\n"
         << "Examples:\n"
         << "  mercan run model.mercan\n"
         << "  mercan run Ahmet2001/Mercan-0.8B-SFT\n"
@@ -281,6 +285,16 @@ static int command_run(int argc, char ** argv) {
     mercan_backend_init();
     mercan_model_params mp = mercan_model_default_params();
     mp.n_gpu_layers = opt.gpu_layers;
+#ifdef MERCAN_CUDA_BUILD
+    std::cout << "Backend: CUDA";
+    if (opt.gpu_layers < 0) std::cout << " (all layers)";
+    else std::cout << " (" << opt.gpu_layers << " GPU layers)";
+    std::cout << "\n";
+#else
+    std::cout << "Backend: CPU";
+    if (opt.gpu_layers != 0) std::cout << " (CUDA backend not included in this build)";
+    std::cout << "\n";
+#endif
     std::cout << "Loading " << model_path << "...\n";
     mercan_model * model = mercan_model_load(model_path.string().c_str(), mp);
     if (!model) die(std::string("model load failed: ") + mercan_last_error());
@@ -313,7 +327,12 @@ int main(int argc, char ** argv) {
     if (argc < 2) { print_help(); return 0; }
     const std::string cmd = argv[1];
     if (cmd == "--version" || cmd == "version") {
-        std::cout << "mercan " << VERSION << " (libmercan " << mercan_version() << ")\n";
+        std::cout << "mercan " << VERSION << " (libmercan " << mercan_version()
+#ifdef MERCAN_CUDA_BUILD
+                  << ", backend cuda)\n";
+#else
+                  << ", backend cpu)\n";
+#endif
         return 0;
     }
     if (cmd == "-h" || cmd == "--help" || cmd == "help") { print_help(); return 0; }

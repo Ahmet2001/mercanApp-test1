@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 jobs:
-  build-linux-x86_64:
+  build-linux-cpu:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -28,30 +28,91 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Build Mercan CLI
+      - name: Build CPU package
         env:
           MERCAN_JOBS: '2'
         run: |
           chmod +x scripts/prepare_llama.sh scripts/build_linux.sh install.sh
           ./scripts/build_linux.sh
           ./dist/mercan-linux-x86_64/bin/mercan --version
+          cp dist/mercan-linux-x86_64.tar.gz dist/mercan-linux-x86_64-cpu.tar.gz
+          sha256sum dist/mercan-linux-x86_64-cpu.tar.gz > dist/mercan-linux-x86_64-cpu.tar.gz.sha256
           ldd ./dist/mercan-linux-x86_64/bin/mercan || true
 
-      - name: Upload CI artifact
+      - name: Upload CPU artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: mercan-linux-x86_64
+          name: mercan-linux-cpu
           path: |
             dist/mercan-linux-x86_64.tar.gz
             dist/mercan-linux-x86_64.tar.gz.sha256
+            dist/mercan-linux-x86_64-cpu.tar.gz
+            dist/mercan-linux-x86_64-cpu.tar.gz.sha256
+
+  build-linux-cuda:
+    runs-on: ubuntu-22.04
+    container:
+      image: nvidia/cuda:12.4.1-devel-ubuntu22.04
+      options: --user 0
+    steps:
+      - name: Dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake ninja-build curl git pkg-config ca-certificates
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          nvcc --version
+          rustc --version
+          cargo --version
+
+      - uses: actions/checkout@v4
+
+      - name: Build CUDA package
+        env:
+          MERCAN_JOBS: '2'
+          MERCAN_CUDA: '1'
+          MERCAN_DIST_NAME: mercan-linux-x86_64-cuda
+          MERCAN_CUDA_ARCHITECTURES: '75-virtual;86-real;89-real;90-real'
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          chmod +x scripts/prepare_llama.sh scripts/build_linux.sh install.sh
+          ./scripts/build_linux.sh
+          ./dist/mercan-linux-x86_64-cuda/bin/mercan --version
+          ldd ./dist/mercan-linux-x86_64-cuda/bin/mercan || true
+
+      - name: Upload CUDA artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mercan-linux-cuda
+          path: |
+            dist/mercan-linux-x86_64-cuda.tar.gz
+            dist/mercan-linux-x86_64-cuda.tar.gz.sha256
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-linux-cpu, build-linux-cuda]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: mercan-linux-*
+          path: release-assets
+          merge-multiple: true
 
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "Mercan ${GITHUB_REF_NAME}" \
+          ls -lah release-assets
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Mercan $GITHUB_REF_NAME" \
             --generate-notes \
-            dist/mercan-linux-x86_64.tar.gz \
-            dist/mercan-linux-x86_64.tar.gz.sha256
+            release-assets/mercan-linux-x86_64.tar.gz \
+            release-assets/mercan-linux-x86_64.tar.gz.sha256 \
+            release-assets/mercan-linux-x86_64-cpu.tar.gz \
+            release-assets/mercan-linux-x86_64-cpu.tar.gz.sha256 \
+            release-assets/mercan-linux-x86_64-cuda.tar.gz \
+            release-assets/mercan-linux-x86_64-cuda.tar.gz.sha256

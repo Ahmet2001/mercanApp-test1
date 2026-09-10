@@ -12,7 +12,7 @@ or directly from Hugging Face:
 mercan run MercanAI/Mercan-0.8B-SFT
 ```
 
-The Hugging Face form downloads `model.mercan` once into `~/.cache/mercan` and reuses the cached copy on later launches.
+The Hugging Face form downloads `model.mercan` once into `~/.cache/mercan` and reuses the cached copy on later launches. On Linux, the installer automatically selects the CUDA build when a working NVIDIA GPU/driver is detected with `nvidia-smi`; otherwise it installs the CPU build.
 
 ## Install on Linux x86_64
 
@@ -21,6 +21,8 @@ Once the GitHub release is available:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Ahmet2001/mercanApp-test1/main/install.sh | sh
 ```
+
+The installer automatically chooses CUDA on NVIDIA systems and CPU elsewhere. Force CPU with `MERCAN_FORCE_CPU=1`.
 
 Then:
 
@@ -61,7 +63,7 @@ Useful run options:
 --top-k N
 --top-p F
 -t, --threads N
---gpu-layers N
+--gpu-layers N   # -1 = all; CUDA package defaults to all layers
 ```
 
 ## Architecture
@@ -110,6 +112,9 @@ cd mercanApp-test1
 chmod +x scripts/*.sh install.sh
 ./scripts/build_linux.sh
 ./dist/mercan-linux-x86_64/bin/mercan --version
+
+# CUDA build (requires CUDA toolkit)
+MERCAN_CUDA=1 MERCAN_DIST_NAME=mercan-linux-x86_64-cuda ./scripts/build_linux.sh
 ```
 
 The build script checks out the pinned llama.cpp commit, builds the NDSRF004 Rust static bridge, applies `runtime/nedolm/nedolm-llama.patch`, copies the NedoLM model implementation and builds `libmercan` plus the `mercan` CLI. The release CLI links the llama/ggml backend statically so users do not need separate backend shared libraries.

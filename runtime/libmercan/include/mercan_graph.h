@@ -11,10 +11,15 @@ extern "C" {
 #define MERCAN_GRAPH_ABI_VERSION 1u
 
 typedef uint64_t mercan_tensor_handle_v1;
-
 #define MERCAN_TENSOR_NONE_V1 ((mercan_tensor_handle_v1) 0)
 
 typedef struct mercan_graph_builder_v1 mercan_graph_builder_v1;
+
+typedef enum mercan_rope_mode_v1 {
+    MERCAN_ROPE_MODE_UNSUPPORTED_V1 = -1,
+    MERCAN_ROPE_MODE_NORMAL_V1 = 0,
+    MERCAN_ROPE_MODE_NEOX_V1 = 1,
+} mercan_rope_mode_v1;
 
 typedef struct mercan_graph_api_v1 {
     uint32_t abi_version;
@@ -47,7 +52,37 @@ typedef struct mercan_graph_api_v1 {
                                       mercan_tensor_handle_v1 a,
                                       mercan_tensor_handle_v1 b,
                                       int32_t dim);
+
+    /* Append-only extension fields. Probe with MERCAN_GRAPH_API_HAS_V1(). */
+    mercan_tensor_handle_v1 (*matmul)(mercan_graph_builder_v1 * builder,
+                                      mercan_tensor_handle_v1 weight,
+                                      mercan_tensor_handle_v1 input);
+    mercan_tensor_handle_v1 (*rms_norm)(mercan_graph_builder_v1 * builder,
+                                        mercan_tensor_handle_v1 src,
+                                        float eps);
+    mercan_tensor_handle_v1 (*rope_ext)(mercan_graph_builder_v1 * builder,
+                                        mercan_tensor_handle_v1 src,
+                                        mercan_tensor_handle_v1 positions,
+                                        mercan_tensor_handle_v1 freq_factors,
+                                        int32_t n_dims,
+                                        mercan_rope_mode_v1 mode,
+                                        int32_t n_ctx_orig,
+                                        float freq_base,
+                                        float freq_scale,
+                                        float ext_factor,
+                                        float attn_factor,
+                                        float beta_fast,
+                                        float beta_slow);
 } mercan_graph_api_v1;
+
+/* The original Graph ABI v1 prefix ends at concat. Later v1 fields are append-only. */
+#define MERCAN_GRAPH_API_V1_BASE_SIZE \
+    (offsetof(mercan_graph_api_v1, concat) + sizeof(((mercan_graph_api_v1 *) 0)->concat))
+
+#define MERCAN_GRAPH_API_HAS_V1(api, member) \
+    ((api) != NULL && \
+     (api)->struct_size >= offsetof(mercan_graph_api_v1, member) + sizeof(((mercan_graph_api_v1 *) 0)->member) && \
+     (api)->member != NULL)
 
 struct mercan_graph_builder_v1 {
     uint32_t abi_version;
@@ -60,7 +95,7 @@ static inline int mercan_graph_builder_valid_v1(const mercan_graph_builder_v1 * 
     return builder && builder->abi_version == MERCAN_GRAPH_ABI_VERSION &&
            builder->struct_size >= sizeof(mercan_graph_builder_v1) &&
            builder->api && builder->api->abi_version == MERCAN_GRAPH_ABI_VERSION &&
-           builder->api->struct_size >= sizeof(mercan_graph_api_v1);
+           builder->api->struct_size >= MERCAN_GRAPH_API_V1_BASE_SIZE;
 }
 
 #ifdef __cplusplus

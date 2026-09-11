@@ -84,6 +84,23 @@ llama_model_nedolm::graph::graph(const llama_model & model, const llm_graph_para
     mercan_graph_builder_v1 mercan_graph = mercan_make_ggml_graph_builder_v1(&mercan_graph_userdata);
     GGML_ASSERT(mercan_graph_builder_valid_v1(&mercan_graph));
     const mercan_graph_api_v1 & mg = *mercan_graph.api;
+    GGML_ASSERT(MERCAN_GRAPH_API_HAS_V1(&mg, rms_norm));
+    GGML_ASSERT(MERCAN_GRAPH_API_HAS_V1(&mg, rope_ext));
+
+    const mercan_rope_mode_v1 mercan_rope_mode = mercan_ggml_rope_mode_to_mercan_v1(rope_type);
+    GGML_ASSERT(mercan_rope_mode != MERCAN_ROPE_MODE_UNSUPPORTED_V1);
+
+    auto graph_rms_norm_weight = [&](ggml_tensor * src, ggml_tensor * weight, int il) -> ggml_tensor * {
+        mercan_tensor_handle_v1 h = mg.rms_norm(
+            &mercan_graph, mercan_ggml_tensor_to_handle_v1(src), hparams.f_norm_rms_eps);
+        ggml_tensor * norm = mercan_ggml_tensor_from_handle_v1(h);
+        GGML_ASSERT(norm != nullptr);
+        cb(norm, "norm", il);
+        h = mg.mul(&mercan_graph, h, mercan_ggml_tensor_to_handle_v1(weight));
+        ggml_tensor * out = mercan_ggml_tensor_from_handle_v1(h);
+        GGML_ASSERT(out != nullptr);
+        return out;
+    };
 
     const int64_t n_embd_head = hparams.n_embd_head_v();
     GGML_ASSERT(n_embd_head == hparams.n_embd_head_k());
@@ -110,17 +127,24 @@ llama_model_nedolm::graph::graph(const llama_model & model, const llm_graph_para
 
     for (int il = 0; il < n_layer; ++il) {
         ggml_tensor * inpSA = inpL;
-        ggml_tensor * cur = build_norm(inpL, model.layers[il].attn_norm, nullptr, LLM_NORM_RMS, il);
+        ggml_tensor * cur = graph_rms_norm_weight(inpL, model.layers[il].attn_norm, il);
         cb(cur, "attn_norm", il);
 
         auto [Qcur, Kcur, Vcur] = build_qkv(model.layers[il], cur,
                 n_embd_head, n_head, n_head_kv, il);
-        Qcur = ggml_rope_ext(ctx0, Qcur, inp_pos, nullptr,
-                n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+        mercan_tensor_handle_v1 q_h = mg.rope_ext(
+                &mercan_graph, mercan_ggml_tensor_to_handle_v1(Qcur),
+                mercan_ggml_tensor_to_handle_v1(inp_pos), MERCAN_TENSOR_NONE_V1,
+                n_rot, mercan_rope_mode, n_ctx_orig, freq_base, freq_scale,
                 ext_factor, attn_factor, beta_fast, beta_slow);
-        Kcur = ggml_rope_ext(ctx0, Kcur, inp_pos, nullptr,
-                n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+        mercan_tensor_handle_v1 k_h = mg.rope_ext(
+                &mercan_graph, mercan_ggml_tensor_to_handle_v1(Kcur),
+                mercan_ggml_tensor_to_handle_v1(inp_pos), MERCAN_TENSOR_NONE_V1,
+                n_rot, mercan_rope_mode, n_ctx_orig, freq_base, freq_scale,
                 ext_factor, attn_factor, beta_fast, beta_slow);
+        Qcur = mercan_ggml_tensor_from_handle_v1(q_h);
+        Kcur = mercan_ggml_tensor_from_handle_v1(k_h);
+        GGML_ASSERT(Qcur != nullptr && Kcur != nullptr);
         cb(Qcur, "Qcur", il);
         cb(Kcur, "Kcur", il);
         cb(Vcur, "Vcur", il);
@@ -131,11 +155,19 @@ llama_model_nedolm::graph::graph(const llama_model & model, const llm_graph_para
                 1.0f/sqrtf(float(n_embd_head)), il);
 
         if (il == n_layer - 1 && inp_out_ids) {
-            cur = ggml_get_rows(ctx0, cur, inp_out_ids);
-            inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+            mercan_tensor_handle_v1 cur_h = mg.get_rows(
+                &mercan_graph, mercan_ggml_tensor_to_handle_v1(cur), mercan_ggml_tensor_to_handle_v1(inp_out_ids));
+            mercan_tensor_handle_v1 residual_h = mg.get_rows(
+                &mercan_graph, mercan_ggml_tensor_to_handle_v1(inpSA), mercan_ggml_tensor_to_handle_v1(inp_out_ids));
+            cur = mercan_ggml_tensor_from_handle_v1(cur_h);
+            inpSA = mercan_ggml_tensor_from_handle_v1(residual_h);
+            GGML_ASSERT(cur != nullptr && inpSA != nullptr);
         }
-        ggml_tensor * ffn_inp = ggml_add(ctx0, cur, inpSA);
-        cur = build_norm(ffn_inp, model.layers[il].ffn_norm, nullptr, LLM_NORM_RMS, il);
+        mercan_tensor_handle_v1 ffn_inp_h = mg.add(
+            &mercan_graph, mercan_ggml_tensor_to_handle_v1(cur), mercan_ggml_tensor_to_handle_v1(inpSA));
+        ggml_tensor * ffn_inp = mercan_ggml_tensor_from_handle_v1(ffn_inp_h);
+        GGML_ASSERT(ffn_inp != nullptr);
+        cur = graph_rms_norm_weight(ffn_inp, model.layers[il].ffn_norm, il);
         cb(cur, "ffn_norm", il);
 
         if (il < static_cast<int>(nedolm.morph_layer_count)) {
@@ -178,13 +210,16 @@ llama_model_nedolm::graph::graph(const llama_model & model, const llm_graph_para
         }
         cb(cur, "ffn_out", il);
 
-        cur = ggml_add(ctx0, cur, ffn_inp);
+        mercan_tensor_handle_v1 residual_out_h = mg.add(
+            &mercan_graph, mercan_ggml_tensor_to_handle_v1(cur), mercan_ggml_tensor_to_handle_v1(ffn_inp));
+        cur = mercan_ggml_tensor_from_handle_v1(residual_out_h);
+        GGML_ASSERT(cur != nullptr);
         cur = build_cvec(cur, il);
         cb(cur, "l_out", il);
         inpL = cur;
     }
 
-    ggml_tensor * cur = build_norm(inpL, model.output_norm, nullptr, LLM_NORM_RMS, -1);
+    ggml_tensor * cur = graph_rms_norm_weight(inpL, model.output_norm, -1);
     cb(cur, "result_norm", -1);
     res->t_embd = cur;
     cur = build_lora_mm(model.output, cur, model.output_s);

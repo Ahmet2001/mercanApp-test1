@@ -43,8 +43,16 @@ The first operation table exposes:
 - `mul`
 - `add`
 - `concat`
+- `matmul`
+- `rms_norm`
+- `rope_ext` (NORMAL/NEOX modes)
 
 Operations return `MERCAN_TENSOR_NONE_V1` on adapter-level failure where a handle is expected.
+
+
+## Append-only compatibility
+
+Graph ABI v1 uses an append-only operation table. `MERCAN_GRAPH_API_V1_BASE_SIZE` describes the original v1 prefix and `MERCAN_GRAPH_API_HAS_V1(api, member)` must be used before calling operations appended later in v1. This lets a newer provider degrade cleanly when loaded against an older v1 runtime instead of assuming every v1 runtime has the newest tail fields.
 
 ## Current ggml adapter
 
@@ -80,17 +88,17 @@ NedoLM is the first real Graph ABI consumer. The following MorphFFN-specific ope
 - role gating with `mul`
 - branch reconstruction with `concat`
 
-The remaining graph is still constructed with backend-managed transformer helpers. This staged migration is intentional.
+The migration now also routes NedoLM RMSNorm+weight application, Q/K RoPE, final-token row selection and residual adds through Graph ABI v1. LoRA-aware matrix multiplication and the attention/KV-cache helper remain backend-managed. This staged migration is intentional.
 
 ## Not yet guaranteed by v1
 
 The initial v1 primitive table does not yet provide a complete independent transformer runtime. The following areas still need Mercan-owned abstractions before a completely unknown architecture can be loaded without backend support:
 
 - model tensor declaration and lookup by stable names
-- matrix multiplication and LoRA-aware matrix multiplication
-- RMSNorm and other normalizations
+- LoRA-aware matrix multiplication (plain `matmul` is available)
+- normalization families beyond RMSNorm
 - reshape/permute/contiguous helpers
-- RoPE
+- multi-dimensional RoPE variants beyond NORMAL/NEOX
 - attention and masking
 - KV-cache read/write and sequence-position semantics
 - output/logit declaration

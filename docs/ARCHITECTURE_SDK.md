@@ -79,6 +79,9 @@ The first primitive set contains:
 - `mul`
 - `add`
 - `concat`
+- plain `matmul`
+- `rms_norm`
+- `rope_ext` for NORMAL/NEOX RoPE
 
 The operation table is carried by `mercan_graph_builder_v1`:
 
@@ -91,7 +94,7 @@ A provider never receives a `ggml_tensor *`. The current ggml adapter converts o
 
 ### Current experimental scope
 
-Graph ABI v1 is intentionally incremental. NedoLM's MorphFFN-specific primitive sequence now runs through this ABI, including token-role lookup, float cast, SwiGLU split, tensor views, role gating, multiplication, and concatenation. Attention construction, RoPE, KV-cache management, normalization helpers, and backend model/tensor ownership are still backend-managed.
+Graph ABI v1 is intentionally incremental. NedoLM's MorphFFN-specific primitive sequence runs through this ABI, and the real NedoLM path now also uses Graph ABI for RMSNorm+weight application, Q/K RoPE, final-token row selection and residual adds. Attention construction, KV-cache management, LoRA-aware matrix multiplication, and backend model/tensor ownership are still backend-managed.
 
 This gives Mercan a real regression target for the abstraction before the API is opened to fully external graph plugins.
 
@@ -108,7 +111,7 @@ NDSRF004 tokenizer provider
                  ↓
 backend graph
         ├── attention / KV cache: backend-managed
-        └── MorphFFN primitives: Mercan Graph ABI v1
+        └── MorphFFN + RMSNorm + RoPE + residual primitives: Mercan Graph ABI v1
                  ↓
 current ggml adapter
                  ↓
@@ -136,4 +139,4 @@ See `examples/custom_arch/` for a minimal provider template.
 
 ## Next compatibility milestone
 
-Before declaring external `.so`/`.dylib` graph plugins stable, Mercan will move enough of NedoLM through Graph ABI to cover the reusable transformer building blocks needed by independent architectures. The planned additions include matrix multiplication/tensor lookup, RMSNorm, RoPE, attention helpers, KV-cache operations, reshape/permute and model-owned tensor declarations. Only after the built-in NedoLM regression passes entirely through that boundary will the external dynamic plugin loader be treated as stable.
+Before declaring external `.so`/`.dylib` graph plugins stable, Mercan will move enough of NedoLM through Graph ABI to cover the reusable transformer building blocks needed by independent architectures. The planned additions now focus on stable tensor lookup/declaration, LoRA-aware linear helpers, attention/masking, KV-cache operations, reshape/permute/contiguous helpers and graph finalization. Only after the built-in NedoLM regression passes entirely through that boundary will the external dynamic plugin loader be treated as stable.

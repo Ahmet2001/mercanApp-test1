@@ -1,16 +1,18 @@
 # Anka external architecture plugin
 
 `mercan_arch_anka` is a real loadable Mercan Plugin ABI v1 module. It registers both the
-`anka` architecture and the external `anka-byte` tokenizer. The architecture provides a
-Graph Callback ABI v1 implementation using only public opaque handles:
+`anka` architecture and the external `anka-byte` tokenizer. The architecture builds a
+complete tiny pre-norm causal transformer block using only public opaque Mercan handles:
 
-`token ids -> token_embd.weight -> get_rows -> output.weight -> matmul -> logits/finalize`
+`token+position embedding -> RMSNorm -> Q/K/V -> runtime self_attention -> residual -> RMSNorm -> SwiGLU FFN -> residual -> output norm -> logits`
 
-Mercan's generic backend adapter can load a `.mercan` file whose
-`general.architecture=anka` directly from GGUF tensor metadata/data, invoke this plugin
-callback, and execute the resulting graph without a compiled llama.cpp model class. The
-regression suite runs this path on CPU and on the ggml CUDA backend with H100.
+Mercan's generic backend adapter loads the `.mercan` tensors directly, owns the causal
+mask and persistent per-layer K/V cache, invokes the plugin graph callback, and executes
+the graph without a compiled llama.cpp model class for `anka`. The plugin can inspect the
+runtime-owned cache through `mercan_kv_resolver_v1` but never receives cache storage or a
+`ggml_tensor *`.
 
-Anka remains intentionally tiny: it proves independent third-party architecture +
-tokenizer execution. It does not yet exercise generic runtime-owned attention/KV-cache,
-which is the next boundary for full transformer-class external plugins.
+The permanent regression verifies multi-token prefill and a subsequent cached decode. A
+fresh context decoding the same final token produces different logits, proving that the
+second decode actually consumes the retained K/V history. The same test passes on CPU and
+the ggml CUDA backend with H100.

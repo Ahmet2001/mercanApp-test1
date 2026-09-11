@@ -116,7 +116,7 @@ A provider never receives a `ggml_tensor *`. The current ggml adapter converts o
 
 Graph ABI v1 is intentionally incremental. NedoLM's MorphFFN-specific primitive sequence runs through this ABI, and the real NedoLM path now also uses Graph ABI for RMSNorm+weight application, Q/K RoPE, final-token row selection and residual adds. Cached self-attention now runs through Graph ABI v1, and KV cache batch views are available through KV Cache ABI v1. Cache mutation/lifetime, LoRA-aware matrix multiplication, and backend model ownership remain runtime-managed.
 
-This gives Mercan a real regression target for the abstraction before the API is opened to fully external graph plugins.
+The same primitives are now also used by a fully external transformer plugin through the generic backend adapter. Runtime-owned attention and KV state therefore work on both the built-in NedoLM path and an architecture that has no compiled llama.cpp model class.
 
 ## NedoLM today
 
@@ -150,23 +150,23 @@ Third-party architecture code must not depend on the representation behind a ten
 2. Implement `mercan_architecture_v1`.
 3. Implement `mercan_tokenizer_v1` if needed.
 4. Use Mercan Graph ABI primitives where the current primitive set is sufficient.
-5. For operations not yet represented by Graph ABI v1, backend graph support is still required.
+5. Use runtime-owned `self_attention` + `mercan_kv_resolver_v1` for causal transformer cache state.
 6. Write a converter that emits `.mercan` metadata and tensors.
 7. Verify registration with `mercan arch list` and `mercan tokenizer list`.
-8. Run the model with `mercan run ./anka-1b.mercan`.
+8. Run the model with `mercan run ./anka-1b.mercan`; architectures using the external graph callback are dispatched through the generic backend without a llama.cpp model factory entry.
 
 See `examples/custom_arch/` for a minimal provider template.
 
 ## Next compatibility milestone
 
-Before declaring external `.so`/`.dylib` graph plugins stable, Mercan will move enough of NedoLM through Graph ABI to cover the reusable transformer building blocks needed by independent architectures. The planned additions now focus on stable tensor lookup/declaration, LoRA-aware linear helpers, attention/masking, KV-cache operations, reshape/permute/contiguous helpers and graph finalization. Only after the built-in NedoLM regression passes entirely through that boundary will the external dynamic plugin loader be treated as stable.
+External plugins can now load tensors, tokenize, build a causal transformer graph, use runtime-owned attention/KV state, and execute prefill plus cached decode without a llama.cpp model-factory entry. The next compatibility work is breadth rather than the basic independence boundary: expose reshape/permute/contiguous helpers needed for arbitrary multi-head layouts, optimize cache mutation to avoid the current retained-K/V copy step, and add production-scale external-model regressions.
 
 
 ## Runtime-owned cached self-attention
 
 Graph ABI v1 exposes `self_attention` as an append-only capability. Architecture plugins pass opaque Q/K/V tensor handles plus the output projection weight; the runtime owns attention masks, sliding-window selection, and the concrete KV-cache implementation. This keeps llama.cpp cache/input classes out of the public SDK.
 
-Plugins must probe the capability with `MERCAN_GRAPH_API_HAS_V1(api, self_attention)` before use. An explicit lower-level KV-cache ABI remains a separate future extension for architectures that need custom cache semantics.
+Plugins must probe the capability with `MERCAN_GRAPH_API_HAS_V1(api, self_attention)` before use. The generic external backend implements this callback with causal masking and persistent per-layer K/V state. Q/K/V may use a single-head 2D layout or a 3D head layout; the runtime keeps concrete cache storage private.
 
 
 ## KV Cache ABI v1
@@ -193,7 +193,7 @@ MERCAN_PLUGINS=./libmercan_arch_anka.so mercan arch list
 mercan run model.mercan --plugin ./libmercan_arch_anka.so
 ```
 
-`examples/plugins/anka` is a real separately-built `.so` registration test. It proves discovery and ABI-safe registration. It intentionally does not claim an inference backend yet; executable third-party graph dispatch is the next SDK boundary.
+`examples/plugins/anka` is a real separately-built `.so` transformer plugin. It proves discovery, ABI-safe registration, external tokenization, graph construction, runtime-owned attention/KV reuse, and CPU/CUDA execution without an Anka class inside llama.cpp.
 
 ### External graph callback ABI v1
 
@@ -204,11 +204,7 @@ An architecture descriptor may append `build_graph` and advertise
 ops through `builder->api`; no `ggml_tensor *`, llama model class, or cache implementation
 is exposed. `mercan_arch_build_graph_v1()` validates the ABI boundary before dispatch.
 
-The external Anka example now builds a minimal embedding -> output projection graph and
-is executed by the permanent plugin-loader test. This establishes executable external
-graph dispatch. Full arbitrary-model inference still requires the generic Mercan model
-loader/backend adapter to create model tensors and graph inputs without llama.cpp's
-compiled architecture factory.
+The external Anka example now builds a complete tiny causal transformer block and is exercised by the generic-backend regression. The plugin resolves every weight through Tensor ABI v1, obtains causal placement/mask views through KV Cache ABI v1, and delegates cached attention to `self_attention`. No Anka-specific model class exists in llama.cpp.
 
 
 ## Generic external architecture backend
@@ -218,7 +214,4 @@ are loaded by Mercan's generic GGUF/ggml backend adapter. The adapter loads name
 `.mercan` container, creates opaque Tensor/Graph ABI handles, invokes the plugin's `build_graph` callback, and
 executes the resulting graph without requiring a compiled llama.cpp model class for that architecture.
 
-The `anka` example also registers an external `anka-byte` tokenizer. The SDK regression builds a tiny Anka
-`.mercan` model and verifies the complete `plugin load -> model load -> tokenize -> graph build -> backend compute -> logits`
-path. CPU is the baseline; when a GPU device is available and `n_gpu_layers != 0`, the same generic adapter selects
-that ggml GPU backend and uploads the model tensors there.
+The `anka` example also registers an external `anka-byte` tokenizer. The SDK regression builds a tiny Anka `.mercan` transformer and verifies `plugin load -> model load -> tokenize -> prefill -> cached decode -> logits`. The test compares a cached context against a fresh context decoding the same token, so a passing result proves that retained K/V history changes the logits. CPU is the baseline; when a GPU device is available and `n_gpu_layers != 0`, the same generic adapter runs the graph and persistent cache path on that ggml GPU backend.

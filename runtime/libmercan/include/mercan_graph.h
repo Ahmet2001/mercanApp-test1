@@ -1,6 +1,8 @@
 #ifndef MERCAN_GRAPH_H
 #define MERCAN_GRAPH_H
 
+#include "mercan_tensor.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -9,9 +11,6 @@ extern "C" {
 #endif
 
 #define MERCAN_GRAPH_ABI_VERSION 1u
-
-typedef uint64_t mercan_tensor_handle_v1;
-#define MERCAN_TENSOR_NONE_V1 ((mercan_tensor_handle_v1) 0)
 
 typedef struct mercan_graph_builder_v1 mercan_graph_builder_v1;
 
@@ -89,11 +88,21 @@ struct mercan_graph_builder_v1 {
     uint32_t struct_size;
     void * userdata;
     const mercan_graph_api_v1 * api;
+
+    /* Append-only v1 extension. Runtime-owned tensor resolver for model weights/state. */
+    mercan_tensor_resolver_v1 * tensors;
 };
+
+#define MERCAN_GRAPH_BUILDER_V1_BASE_SIZE \
+    (offsetof(mercan_graph_builder_v1, api) + sizeof(((mercan_graph_builder_v1 *) 0)->api))
+
+#define MERCAN_GRAPH_BUILDER_HAS_V1(builder, member) \
+    ((builder) != NULL && \
+     (builder)->struct_size >= offsetof(mercan_graph_builder_v1, member) + sizeof((builder)->member))
 
 static inline int mercan_graph_builder_valid_v1(const mercan_graph_builder_v1 * builder) {
     return builder && builder->abi_version == MERCAN_GRAPH_ABI_VERSION &&
-           builder->struct_size >= sizeof(mercan_graph_builder_v1) &&
+           builder->struct_size >= MERCAN_GRAPH_BUILDER_V1_BASE_SIZE &&
            builder->api && builder->api->abi_version == MERCAN_GRAPH_ABI_VERSION &&
            builder->api->struct_size >= MERCAN_GRAPH_API_V1_BASE_SIZE;
 }

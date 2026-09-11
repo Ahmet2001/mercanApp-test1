@@ -33,6 +33,8 @@ enum mercan_arch_flags_v1 {
     MERCAN_ARCH_BUILTIN = 1ull << 1,
     /* Architecture exercises Mercan Graph ABI v1 primitives inside its backend graph. */
     MERCAN_ARCH_GRAPH_ABI_V1_PRIMITIVES = 1ull << 2,
+    /* Architecture resolves model weights through Mercan Tensor ABI v1. */
+    MERCAN_ARCH_TENSOR_ABI_V1 = 1ull << 3,
 };
 
 typedef struct mercan_architecture_v1 {

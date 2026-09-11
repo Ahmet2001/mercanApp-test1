@@ -61,6 +61,10 @@ if(MERCAN_BUILD_SDK_TESTS)
     add_executable(mercan-sdk-prefix-test tests/sdk_prefix_compat.cpp)
     target_link_libraries(mercan-sdk-prefix-test PRIVATE libmercan)
     add_test(NAME mercan-sdk-prefix-compat COMMAND mercan-sdk-prefix-test)
+
+    add_executable(mercan-tensor-abi-test tests/tensor_abi_compile.cpp)
+    target_include_directories(mercan-tensor-abi-test PRIVATE runtime/libmercan/include)
+    add_test(NAME mercan-tensor-abi-v1 COMMAND mercan-tensor-abi-test)
 endif()
 
 include(GNUInstallDirs)
@@ -72,5 +76,6 @@ install(FILES
     runtime/libmercan/include/mercan.h
     runtime/libmercan/include/mercan_arch.h
     runtime/libmercan/include/mercan_tokenizer.h
+    runtime/libmercan/include/mercan_tensor.h
     runtime/libmercan/include/mercan_graph.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

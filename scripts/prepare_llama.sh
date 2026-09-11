@@ -23,6 +23,7 @@ cargo build --release --manifest-path "$LLAMA_DIR/vendor/nedo004-ffi/Cargo.toml"
 
 git -C "$LLAMA_DIR" apply "$ROOT/runtime/nedolm/nedolm-llama.patch"
 cp "$ROOT/runtime/nedolm/nedolm.cpp" "$LLAMA_DIR/src/models/nedolm.cpp"
+cp "$ROOT/runtime/libmercan/include/mercan_tensor.h" "$LLAMA_DIR/src/models/mercan_tensor.h"
 cp "$ROOT/runtime/libmercan/include/mercan_graph.h" "$LLAMA_DIR/src/models/mercan_graph.h"
 cp "$ROOT/runtime/nedolm/mercan_graph_ggml.hpp" "$LLAMA_DIR/src/models/mercan_graph_ggml.hpp"
 

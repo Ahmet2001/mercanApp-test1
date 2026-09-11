@@ -42,6 +42,18 @@ jobs:
             echo "::error::runtime/nedolm/nedolm.cpp eksik"
             exit 4
           }
+          test -s runtime/nedolm/mercan_graph_ggml.hpp || {
+            echo "::error::runtime/nedolm/mercan_graph_ggml.hpp eksik"
+            exit 5
+          }
+          test -s runtime/libmercan/include/mercan_graph.h || {
+            echo "::error::runtime/libmercan/include/mercan_graph.h eksik"
+            exit 6
+          }
+          test -s runtime/libmercan/include/mercan_tensor.h || {
+            echo "::error::runtime/libmercan/include/mercan_tensor.h eksik"
+            exit 7
+          }
 
       - name: Build current NDSRF004 FFI for iPhone arm64
         shell: bash
@@ -114,6 +126,9 @@ jobs:
           git apply "$GITHUB_WORKSPACE/runtime/nedolm/nedolm-llama.patch"
 
           cp "$GITHUB_WORKSPACE/runtime/nedolm/nedolm.cpp" src/models/nedolm.cpp
+          cp "$GITHUB_WORKSPACE/runtime/libmercan/include/mercan_tensor.h" src/models/mercan_tensor.h
+          cp "$GITHUB_WORKSPACE/runtime/libmercan/include/mercan_graph.h" src/models/mercan_graph.h
+          cp "$GITHUB_WORKSPACE/runtime/nedolm/mercan_graph_ggml.hpp" src/models/mercan_graph_ggml.hpp
 
           # Silo was compiled against an older llama C ABI. Keep Silo's original
           # headers (so they remain compatible with whisper's ggml headers), and

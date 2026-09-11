@@ -173,6 +173,8 @@ Custom families register through the versioned public descriptors in `mercan_arc
 
 Architecture/tokenizer descriptors are append-only within ABI v1: Mercan accepts a stable minimum prefix, copies only `struct_size` bytes and zero-fills newer tail fields. Optional regression coverage is available with `-DMERCAN_BUILD_SDK_TESTS=ON`.
 
+Mercan Tensor ABI v1 adds stable named weight declarations and opaque `tensor_by_name` / `require_tensor` lookup. The built-in NedoLM graph uses the resolver for its `.mercan` weight names; third-party architecture code does not need `ggml_tensor*` for these lookups.
+
 Architecture SDK v1 is paired with the experimental Mercan Graph ABI v1. The primitive table now covers tensor shape/stride inspection, row gathering, F32 cast, SwiGLU split, 2D views, multiplication, addition, concatenation, plain matrix multiplication, RMSNorm and NORMAL/NEOX RoPE. NedoLM uses these primitives in its real inference graph.
 
 A completely new architecture can use these backend-independent primitives today, but operations not yet represented by Graph ABI v1 still require compiled backend support. External `.so`/`.dylib` graph plugins are therefore not declared stable yet.

@@ -3,7 +3,23 @@
 #include "mercan_graph.h"
 #include "ggml.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+struct mercan_ggml_tensor_decl_v1 {
+    std::string name;
+    uint32_t flags = 0;
+};
+
+struct mercan_ggml_tensor_catalog_v1 {
+    std::unordered_map<std::string, ggml_tensor *> bound;
+    std::vector<mercan_ggml_tensor_decl_v1> declared;
+    std::string last_error;
+};
 
 struct mercan_ggml_graph_userdata_v1 {
     ggml_context * ctx = nullptr;
@@ -15,6 +31,118 @@ static inline ggml_tensor * mercan_ggml_tensor_from_handle_v1(mercan_tensor_hand
 
 static inline mercan_tensor_handle_v1 mercan_ggml_tensor_to_handle_v1(ggml_tensor * tensor) {
     return static_cast<mercan_tensor_handle_v1>(reinterpret_cast<uintptr_t>(tensor));
+}
+
+static inline int mercan_ggml_tensor_catalog_bind_v1(
+        mercan_ggml_tensor_catalog_v1 * catalog,
+        const char * name,
+        ggml_tensor * tensor) {
+    if (!catalog || !name || !*name) return -1;
+    auto [it, inserted] = catalog->bound.emplace(name, tensor);
+    if (!inserted && it->second != tensor) {
+        catalog->last_error = std::string("duplicate tensor binding for '") + name + "'";
+        return -1;
+    }
+    return 0;
+}
+
+static inline mercan_ggml_tensor_catalog_v1 * mercan_ggml_tensor_catalog_from_resolver_v1(
+        mercan_tensor_resolver_v1 * resolver) {
+    return resolver ? static_cast<mercan_ggml_tensor_catalog_v1 *>(resolver->userdata) : nullptr;
+}
+
+static inline int mercan_ggml_declare_tensor_v1(
+        mercan_tensor_resolver_v1 * resolver,
+        const char * name,
+        uint32_t flags) {
+    auto * catalog = mercan_ggml_tensor_catalog_from_resolver_v1(resolver);
+    if (!catalog || !name || !*name) return -1;
+
+    auto it = std::find_if(catalog->declared.begin(), catalog->declared.end(),
+        [name](const mercan_ggml_tensor_decl_v1 & item) { return item.name == name; });
+    if (it == catalog->declared.end()) {
+        catalog->declared.push_back({name, flags});
+    } else {
+        it->flags |= flags;
+    }
+
+    const auto found = catalog->bound.find(name);
+    if ((flags & MERCAN_TENSOR_REQUIRED_V1) &&
+        (found == catalog->bound.end() || found->second == nullptr)) {
+        catalog->last_error = std::string("required tensor is missing: ") + name;
+        return -1;
+    }
+    return 0;
+}
+
+static inline mercan_tensor_handle_v1 mercan_ggml_tensor_by_name_v1(
+        mercan_tensor_resolver_v1 * resolver,
+        const char * name) {
+    auto * catalog = mercan_ggml_tensor_catalog_from_resolver_v1(resolver);
+    if (!catalog || !name || !*name) return MERCAN_TENSOR_NONE_V1;
+    const auto it = catalog->bound.find(name);
+    return it != catalog->bound.end() && it->second
+        ? mercan_ggml_tensor_to_handle_v1(it->second)
+        : MERCAN_TENSOR_NONE_V1;
+}
+
+static inline mercan_tensor_handle_v1 mercan_ggml_require_tensor_v1(
+        mercan_tensor_resolver_v1 * resolver,
+        const char * name) {
+    const mercan_tensor_handle_v1 handle = mercan_ggml_tensor_by_name_v1(resolver, name);
+    if (handle == MERCAN_TENSOR_NONE_V1) {
+        if (auto * catalog = mercan_ggml_tensor_catalog_from_resolver_v1(resolver)) {
+            catalog->last_error = std::string("required tensor lookup failed: ") + (name ? name : "<null>");
+        }
+    }
+    return handle;
+}
+
+static inline int mercan_ggml_has_tensor_v1(mercan_tensor_resolver_v1 * resolver, const char * name) {
+    return mercan_ggml_tensor_by_name_v1(resolver, name) != MERCAN_TENSOR_NONE_V1;
+}
+
+static inline const char * mercan_ggml_tensor_last_error_v1(mercan_tensor_resolver_v1 * resolver) {
+    auto * catalog = mercan_ggml_tensor_catalog_from_resolver_v1(resolver);
+    return catalog ? catalog->last_error.c_str() : "invalid tensor resolver";
+}
+
+static inline size_t mercan_ggml_declared_count_v1(mercan_tensor_resolver_v1 * resolver) {
+    auto * catalog = mercan_ggml_tensor_catalog_from_resolver_v1(resolver);
+    return catalog ? catalog->declared.size() : 0;
+}
+
+static inline const char * mercan_ggml_declared_name_v1(mercan_tensor_resolver_v1 * resolver, size_t index) {
+    auto * catalog = mercan_ggml_tensor_catalog_from_resolver_v1(resolver);
+    return catalog && index < catalog->declared.size() ? catalog->declared[index].name.c_str() : nullptr;
+}
+
+static inline uint32_t mercan_ggml_declared_flags_v1(mercan_tensor_resolver_v1 * resolver, size_t index) {
+    auto * catalog = mercan_ggml_tensor_catalog_from_resolver_v1(resolver);
+    return catalog && index < catalog->declared.size() ? catalog->declared[index].flags : 0;
+}
+
+static const mercan_tensor_api_v1 MERCAN_GGML_TENSOR_API_V1 = {
+    MERCAN_TENSOR_ABI_VERSION,
+    sizeof(mercan_tensor_api_v1),
+    mercan_ggml_declare_tensor_v1,
+    mercan_ggml_tensor_by_name_v1,
+    mercan_ggml_require_tensor_v1,
+    mercan_ggml_has_tensor_v1,
+    mercan_ggml_tensor_last_error_v1,
+    mercan_ggml_declared_count_v1,
+    mercan_ggml_declared_name_v1,
+    mercan_ggml_declared_flags_v1,
+};
+
+static inline mercan_tensor_resolver_v1 mercan_make_ggml_tensor_resolver_v1(
+        mercan_ggml_tensor_catalog_v1 * catalog) {
+    mercan_tensor_resolver_v1 out{};
+    out.abi_version = MERCAN_TENSOR_ABI_VERSION;
+    out.struct_size = sizeof(mercan_tensor_resolver_v1);
+    out.userdata = catalog;
+    out.api = &MERCAN_GGML_TENSOR_API_V1;
+    return out;
 }
 
 static inline mercan_ggml_graph_userdata_v1 * mercan_ggml_userdata_v1(mercan_graph_builder_v1 * builder) {
@@ -181,11 +309,14 @@ static const mercan_graph_api_v1 MERCAN_GGML_GRAPH_API_V1 = {
     mercan_ggml_rope_ext_v1,
 };
 
-static inline mercan_graph_builder_v1 mercan_make_ggml_graph_builder_v1(mercan_ggml_graph_userdata_v1 * userdata) {
+static inline mercan_graph_builder_v1 mercan_make_ggml_graph_builder_v1(
+        mercan_ggml_graph_userdata_v1 * userdata,
+        mercan_tensor_resolver_v1 * tensors = nullptr) {
     mercan_graph_builder_v1 out{};
     out.abi_version = MERCAN_GRAPH_ABI_VERSION;
     out.struct_size = sizeof(mercan_graph_builder_v1);
     out.userdata = userdata;
     out.api = &MERCAN_GGML_GRAPH_API_V1;
+    out.tensors = tensors;
     return out;
 }

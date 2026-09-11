@@ -33,6 +33,12 @@ cmake --build build/sdk-test --target mercan-sdk-prefix-test
 ctest --test-dir build/sdk-test -R mercan-sdk-prefix-compat --output-on-failure
 ```
 
+## Stable tensor resolver
+
+Architecture code that needs model weights should use Mercan Tensor ABI v1 rather than backend structs. The runtime exposes a `mercan_tensor_resolver_v1` from the graph builder when available. Providers declare names and resolve opaque handles with `tensor_by_name` / `require_tensor`. See [`TENSOR_ABI_V1.md`](TENSOR_ABI_V1.md).
+
+The built-in NedoLM provider now declares the canonical `.mercan` weight names and resolves its embedding, norm, attention-output, FFN/MorphFFN and output weights through this resolver. Q/K/V are resolved and validated by name while the projection operation remains in the LoRA-aware backend helper.
+
 ## Architecture registry
 
 An architecture provider exports a `mercan_architecture_v1` descriptor and registers it with `mercan_arch_register_v1()`.

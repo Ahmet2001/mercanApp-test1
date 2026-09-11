@@ -1,6 +1,8 @@
 #include "models.h"
 #include "mercan_graph_ggml.hpp"
 
+#include <string>
+
 void llama_model_nedolm::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
     ml.get_key(LLM_KV_ATTENTION_SLIDING_WINDOW, hparams.n_swa);
@@ -76,13 +78,75 @@ llama_model_nedolm::graph::graph(const llama_model & model, const llm_graph_para
     const int64_t morph_root = static_cast<int64_t>(nedolm.morph_root_width);
     const int64_t morph_suffix = static_cast<int64_t>(nedolm.morph_suffix_width);
 
-    // Mercan Graph ABI v1 deliberately exposes opaque tensor handles.  The
-    // current backend adapter maps them to ggml tensors internally, while the
-    // architecture code below uses only the stable operation table for the
-    // MorphFFN-specific primitive sequence.
+    // Mercan Tensor ABI v1 maps stable .mercan tensor names to opaque handles.
+    // The architecture-facing graph below resolves weights by name instead of
+    // reaching into llama_model/layer fields directly.  Only this private
+    // backend binding block knows the ggml pointers.
+    mercan_ggml_tensor_catalog_v1 mercan_tensor_catalog;
+    auto block_tensor_name = [](int il, const char * suffix) {
+        return std::string("blk.") + std::to_string(il) + "." + suffix;
+    };
+    auto bind_tensor = [&](const std::string & name, ggml_tensor * tensor) {
+        GGML_ASSERT(mercan_ggml_tensor_catalog_bind_v1(&mercan_tensor_catalog, name.c_str(), tensor) == 0);
+    };
+
+    bind_tensor("token_embd.weight", model.tok_embd);
+    bind_tensor("output_norm.weight", model.output_norm);
+    bind_tensor("output.weight", model.output);
+    for (int il = 0; il < n_layer; ++il) {
+        const auto & layer = model.layers[il];
+        bind_tensor(block_tensor_name(il, "attn_norm.weight"), layer.attn_norm);
+        bind_tensor(block_tensor_name(il, "attn_q.weight"), layer.wq);
+        bind_tensor(block_tensor_name(il, "attn_k.weight"), layer.wk);
+        bind_tensor(block_tensor_name(il, "attn_v.weight"), layer.wv);
+        bind_tensor(block_tensor_name(il, "attn_output.weight"), layer.wo);
+        bind_tensor(block_tensor_name(il, "ffn_norm.weight"), layer.ffn_norm);
+        bind_tensor(block_tensor_name(il, "ffn_gate.weight"), layer.ffn_gate);
+        bind_tensor(block_tensor_name(il, "ffn_up.weight"), layer.ffn_up);
+        bind_tensor(block_tensor_name(il, "ffn_down.weight"), layer.ffn_down);
+    }
+    bind_tensor("blk.0.ffn_gate_tid2eid.weight", model.layers[0].ffn_gate_tid2eid);
+
+    mercan_tensor_resolver_v1 mercan_tensors = mercan_make_ggml_tensor_resolver_v1(&mercan_tensor_catalog);
+    GGML_ASSERT(mercan_tensor_resolver_valid_v1(&mercan_tensors));
+    const mercan_tensor_api_v1 & mt = *mercan_tensors.api;
+
+    auto declare_required = [&](const std::string & name) {
+        GGML_ASSERT(mt.declare_tensor(&mercan_tensors, name.c_str(),
+            MERCAN_TENSOR_REQUIRED_V1 | MERCAN_TENSOR_WEIGHT_V1) == 0);
+    };
+    declare_required("token_embd.weight");
+    declare_required("output_norm.weight");
+    declare_required("output.weight");
+    for (int il = 0; il < n_layer; ++il) {
+        declare_required(block_tensor_name(il, "attn_norm.weight"));
+        declare_required(block_tensor_name(il, "attn_q.weight"));
+        declare_required(block_tensor_name(il, "attn_k.weight"));
+        declare_required(block_tensor_name(il, "attn_v.weight"));
+        declare_required(block_tensor_name(il, "attn_output.weight"));
+        declare_required(block_tensor_name(il, "ffn_norm.weight"));
+        declare_required(block_tensor_name(il, "ffn_gate.weight"));
+        declare_required(block_tensor_name(il, "ffn_up.weight"));
+        declare_required(block_tensor_name(il, "ffn_down.weight"));
+    }
+    declare_required("blk.0.ffn_gate_tid2eid.weight");
+
+    auto require_tensor_h = [&](const std::string & name) -> mercan_tensor_handle_v1 {
+        const mercan_tensor_handle_v1 handle = mt.require_tensor(&mercan_tensors, name.c_str());
+        GGML_ASSERT(handle != MERCAN_TENSOR_NONE_V1);
+        return handle;
+    };
+    auto require_tensor = [&](const std::string & name) -> ggml_tensor * {
+        ggml_tensor * tensor = mercan_ggml_tensor_from_handle_v1(require_tensor_h(name));
+        GGML_ASSERT(tensor != nullptr);
+        return tensor;
+    };
+
     mercan_ggml_graph_userdata_v1 mercan_graph_userdata{ctx0};
-    mercan_graph_builder_v1 mercan_graph = mercan_make_ggml_graph_builder_v1(&mercan_graph_userdata);
+    mercan_graph_builder_v1 mercan_graph = mercan_make_ggml_graph_builder_v1(&mercan_graph_userdata, &mercan_tensors);
     GGML_ASSERT(mercan_graph_builder_valid_v1(&mercan_graph));
+    GGML_ASSERT(MERCAN_GRAPH_BUILDER_HAS_V1(&mercan_graph, tensors));
+    GGML_ASSERT(mercan_graph.tensors == &mercan_tensors);
     const mercan_graph_api_v1 & mg = *mercan_graph.api;
     GGML_ASSERT(MERCAN_GRAPH_API_HAS_V1(&mg, rms_norm));
     GGML_ASSERT(MERCAN_GRAPH_API_HAS_V1(&mg, rope_ext));
@@ -107,7 +171,7 @@ llama_model_nedolm::graph::graph(const llama_model & model, const llm_graph_para
     GGML_ASSERT(n_embd_head == n_rot);
     GGML_ASSERT(hparams.n_ff() == morph_shared + morph_root + morph_suffix);
 
-    ggml_tensor * inpL = build_inp_embd(model.tok_embd);
+    ggml_tensor * inpL = build_inp_embd(require_tensor("token_embd.weight"));
     ggml_tensor * inp_tokens = res->t_inp_tokens;
     GGML_ASSERT(inp_tokens != nullptr);
 
@@ -118,7 +182,7 @@ llama_model_nedolm::graph::graph(const llama_model & model, const llm_graph_para
     // [2, vocab] GET_ROWS token ids -> [2, n_tokens], through Graph ABI v1.
     mercan_tensor_handle_v1 role_mask_h = mg.get_rows(
         &mercan_graph,
-        mercan_ggml_tensor_to_handle_v1(model.layers[0].ffn_gate_tid2eid),
+        require_tensor_h("blk.0.ffn_gate_tid2eid.weight"),
         mercan_ggml_tensor_to_handle_v1(inp_tokens));
     role_mask_h = mg.cast_f32(&mercan_graph, role_mask_h);
     ggml_tensor * role_mask = mercan_ggml_tensor_from_handle_v1(role_mask_h);
@@ -127,9 +191,12 @@ llama_model_nedolm::graph::graph(const llama_model & model, const llm_graph_para
 
     for (int il = 0; il < n_layer; ++il) {
         ggml_tensor * inpSA = inpL;
-        ggml_tensor * cur = graph_rms_norm_weight(inpL, model.layers[il].attn_norm, il);
+        ggml_tensor * cur = graph_rms_norm_weight(inpL, require_tensor(block_tensor_name(il, "attn_norm.weight")), il);
         cb(cur, "attn_norm", il);
 
+        GGML_ASSERT(require_tensor(block_tensor_name(il, "attn_q.weight")) == model.layers[il].wq);
+        GGML_ASSERT(require_tensor(block_tensor_name(il, "attn_k.weight")) == model.layers[il].wk);
+        GGML_ASSERT(require_tensor(block_tensor_name(il, "attn_v.weight")) == model.layers[il].wv);
         auto [Qcur, Kcur, Vcur] = build_qkv(model.layers[il], cur,
                 n_embd_head, n_head, n_head_kv, il);
         mercan_tensor_handle_v1 q_h = mg.rope_ext(
@@ -150,7 +217,7 @@ llama_model_nedolm::graph::graph(const llama_model & model, const llm_graph_para
         cb(Vcur, "Vcur", il);
 
         cur = build_attn(inp_attn,
-                model.layers[il].wo, model.layers[il].wo_b, model.layers[il].wo_s,
+                require_tensor(block_tensor_name(il, "attn_output.weight")), model.layers[il].wo_b, model.layers[il].wo_s,
                 Qcur, Kcur, Vcur, nullptr, nullptr, nullptr,
                 1.0f/sqrtf(float(n_embd_head)), il);
 
@@ -167,12 +234,12 @@ llama_model_nedolm::graph::graph(const llama_model & model, const llm_graph_para
             &mercan_graph, mercan_ggml_tensor_to_handle_v1(cur), mercan_ggml_tensor_to_handle_v1(inpSA));
         ggml_tensor * ffn_inp = mercan_ggml_tensor_from_handle_v1(ffn_inp_h);
         GGML_ASSERT(ffn_inp != nullptr);
-        cur = graph_rms_norm_weight(ffn_inp, model.layers[il].ffn_norm, il);
+        cur = graph_rms_norm_weight(ffn_inp, require_tensor(block_tensor_name(il, "ffn_norm.weight")), il);
         cb(cur, "ffn_norm", il);
 
         if (il < static_cast<int>(nedolm.morph_layer_count)) {
-            ggml_tensor * up = build_lora_mm(model.layers[il].ffn_up, cur);
-            ggml_tensor * gate = build_lora_mm(model.layers[il].ffn_gate, cur);
+            ggml_tensor * up = build_lora_mm(require_tensor(block_tensor_name(il, "ffn_up.weight")), cur);
+            ggml_tensor * gate = build_lora_mm(require_tensor(block_tensor_name(il, "ffn_gate.weight")), cur);
 
             mercan_tensor_handle_v1 z_h = mg.swiglu_split(
                 &mercan_graph, mercan_ggml_tensor_to_handle_v1(gate), mercan_ggml_tensor_to_handle_v1(up));
@@ -200,12 +267,12 @@ llama_model_nedolm::graph::graph(const llama_model & model, const llm_graph_para
             z_h = mg.concat(&mercan_graph, z_h, suffix_h, 0);
             z = mercan_ggml_tensor_from_handle_v1(z_h);
             GGML_ASSERT(z != nullptr);
-            cur = build_lora_mm(model.layers[il].ffn_down, z);
+            cur = build_lora_mm(require_tensor(block_tensor_name(il, "ffn_down.weight")), z);
         } else {
             cur = build_ffn(cur,
-                    model.layers[il].ffn_up, nullptr, nullptr,
-                    model.layers[il].ffn_gate, nullptr, nullptr,
-                    model.layers[il].ffn_down, nullptr, nullptr,
+                    require_tensor(block_tensor_name(il, "ffn_up.weight")), nullptr, nullptr,
+                    require_tensor(block_tensor_name(il, "ffn_gate.weight")), nullptr, nullptr,
+                    require_tensor(block_tensor_name(il, "ffn_down.weight")), nullptr, nullptr,
                     nullptr, LLM_FFN_SILU, LLM_FFN_PAR, il);
         }
         cb(cur, "ffn_out", il);
@@ -219,10 +286,10 @@ llama_model_nedolm::graph::graph(const llama_model & model, const llm_graph_para
         inpL = cur;
     }
 
-    ggml_tensor * cur = graph_rms_norm_weight(inpL, model.output_norm, -1);
+    ggml_tensor * cur = graph_rms_norm_weight(inpL, require_tensor("output_norm.weight"), -1);
     cb(cur, "result_norm", -1);
     res->t_embd = cur;
-    cur = build_lora_mm(model.output, cur, model.output_s);
+    cur = build_lora_mm(require_tensor("output.weight"), cur, model.output_s);
     cb(cur, "result_output", -1);
     res->t_logits = cur;
     ggml_build_forward_expand(gf, cur);

@@ -1,6 +1,7 @@
 #include "mercan.h"
 #include "mercan_arch.h"
 #include "mercan_graph.h"
+#include "mercan_tensor.h"
 #include "mercan_tokenizer.h"
 
 #include <algorithm>
@@ -251,6 +252,7 @@ static void print_help() {
         << "  mercan arch list\n"
         << "  mercan tokenizer list\n"
         << "  mercan graph abi\n"
+        << "  mercan tensor abi\n"
         << "  mercan --version\n\n"
         << "Run options:\n"
         << "  -p, --prompt TEXT       single-shot prompt (otherwise interactive)\n"
@@ -342,6 +344,7 @@ static int command_arch(int argc, char ** argv) {
         if (arch->display_name && *arch->display_name) std::cout << "\t" << arch->display_name;
         if (arch->default_tokenizer && *arch->default_tokenizer) std::cout << "\ttokenizer=" << arch->default_tokenizer;
         if (arch->flags & MERCAN_ARCH_GRAPH_ABI_V1_PRIMITIVES) std::cout << "\tgraph-abi-v1";
+        if (arch->flags & MERCAN_ARCH_TENSOR_ABI_V1) std::cout << "\ttensor-abi-v1";
         if (arch->flags & MERCAN_ARCH_BUILTIN) std::cout << "\tbuiltin";
         std::cout << "\n";
     }
@@ -354,7 +357,19 @@ static int command_graph(int argc, char ** argv) {
     }
     std::cout << "Mercan Graph ABI " << MERCAN_GRAPH_ABI_VERSION << "\n"
               << "tensor_handles=opaque\n"
-              << "primitives=get_rows,cast_f32,swiglu_split,view_2d,mul,add,concat,matmul,rms_norm,rope_ext\n";
+              << "primitives=get_rows,cast_f32,swiglu_split,view_2d,mul,add,concat,matmul,rms_norm,rope_ext\n"
+              << "tensor_resolver=tensor-abi-v1\n";
+    return 0;
+}
+
+static int command_tensor(int argc, char ** argv) {
+    if (argc != 3 || std::string(argv[2]) != "abi") {
+        die("usage: mercan tensor abi");
+    }
+    std::cout << "Mercan Tensor ABI " << MERCAN_TENSOR_ABI_VERSION << "\n"
+              << "handles=opaque\n"
+              << "lookup=tensor_by_name,require_tensor\n"
+              << "declarations=required,optional,weight,state\n";
     return 0;
 }
 
@@ -392,6 +407,7 @@ int main(int argc, char ** argv) {
     if (cmd == "arch") return command_arch(argc, argv);
     if (cmd == "tokenizer") return command_tokenizer(argc, argv);
     if (cmd == "graph") return command_graph(argc, argv);
+    if (cmd == "tensor") return command_tensor(argc, argv);
     if (cmd == "pull") {
         if (argc < 3) die("missing Hugging Face repository");
         const auto p = pull_hf(parse_hf_spec(argv[2]), argc > 3 && std::string(argv[3]) == "--force");

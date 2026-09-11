@@ -65,6 +65,10 @@ if(MERCAN_BUILD_SDK_TESTS)
     add_executable(mercan-tensor-abi-test tests/tensor_abi_compile.cpp)
     target_include_directories(mercan-tensor-abi-test PRIVATE runtime/libmercan/include)
     add_test(NAME mercan-tensor-abi-v1 COMMAND mercan-tensor-abi-test)
+
+    add_executable(mercan-graph-attention-abi-test tests/graph_attention_abi_compile.cpp)
+    target_include_directories(mercan-graph-attention-abi-test PRIVATE runtime/libmercan/include)
+    add_test(NAME mercan-graph-attention-abi-v1 COMMAND mercan-graph-attention-abi-test)
 endif()
 
 include(GNUInstallDirs)

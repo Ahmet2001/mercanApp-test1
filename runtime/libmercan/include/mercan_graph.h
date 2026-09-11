@@ -72,6 +72,17 @@ typedef struct mercan_graph_api_v1 {
                                         float attn_factor,
                                         float beta_fast,
                                         float beta_slow);
+
+    /* Runtime-owned cached self-attention. Mask/KV-cache layout remains backend-private. */
+    mercan_tensor_handle_v1 (*self_attention)(mercan_graph_builder_v1 * builder,
+                                              mercan_tensor_handle_v1 q,
+                                              mercan_tensor_handle_v1 k,
+                                              mercan_tensor_handle_v1 v,
+                                              mercan_tensor_handle_v1 out_weight,
+                                              mercan_tensor_handle_v1 out_bias,
+                                              mercan_tensor_handle_v1 out_scale,
+                                              float kq_scale,
+                                              int32_t layer_index);
 } mercan_graph_api_v1;
 
 /* The original Graph ABI v1 prefix ends at concat. Later v1 fields are append-only. */

@@ -160,3 +160,10 @@ See `examples/custom_arch/` for a minimal provider template.
 ## Next compatibility milestone
 
 Before declaring external `.so`/`.dylib` graph plugins stable, Mercan will move enough of NedoLM through Graph ABI to cover the reusable transformer building blocks needed by independent architectures. The planned additions now focus on stable tensor lookup/declaration, LoRA-aware linear helpers, attention/masking, KV-cache operations, reshape/permute/contiguous helpers and graph finalization. Only after the built-in NedoLM regression passes entirely through that boundary will the external dynamic plugin loader be treated as stable.
+
+
+## Runtime-owned cached self-attention
+
+Graph ABI v1 exposes `self_attention` as an append-only capability. Architecture plugins pass opaque Q/K/V tensor handles plus the output projection weight; the runtime owns attention masks, sliding-window selection, and the concrete KV-cache implementation. This keeps llama.cpp cache/input classes out of the public SDK.
+
+Plugins must probe the capability with `MERCAN_GRAPH_API_HAS_V1(api, self_attention)` before use. An explicit lower-level KV-cache ABI remains a separate future extension for architectures that need custom cache semantics.

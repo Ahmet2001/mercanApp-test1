@@ -357,7 +357,8 @@ static int command_graph(int argc, char ** argv) {
     }
     std::cout << "Mercan Graph ABI " << MERCAN_GRAPH_ABI_VERSION << "\n"
               << "tensor_handles=opaque\n"
-              << "primitives=get_rows,cast_f32,swiglu_split,view_2d,mul,add,concat,matmul,rms_norm,rope_ext\n"
+              << "primitives=get_rows,cast_f32,swiglu_split,view_2d,mul,add,concat,matmul,rms_norm,rope_ext,self_attention\n"
+              << "attention=runtime-owned-mask-and-cache\n"
               << "tensor_resolver=tensor-abi-v1\n";
     return 0;
 }

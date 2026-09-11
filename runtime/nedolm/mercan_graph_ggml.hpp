@@ -21,8 +21,21 @@ struct mercan_ggml_tensor_catalog_v1 {
     std::string last_error;
 };
 
+using mercan_ggml_self_attention_callback_v1 = ggml_tensor * (*)(
+    void * userdata,
+    ggml_tensor * q,
+    ggml_tensor * k,
+    ggml_tensor * v,
+    ggml_tensor * out_weight,
+    ggml_tensor * out_bias,
+    ggml_tensor * out_scale,
+    float kq_scale,
+    int32_t layer_index);
+
 struct mercan_ggml_graph_userdata_v1 {
     ggml_context * ctx = nullptr;
+    void * attention_userdata = nullptr;
+    mercan_ggml_self_attention_callback_v1 self_attention = nullptr;
 };
 
 static inline ggml_tensor * mercan_ggml_tensor_from_handle_v1(mercan_tensor_handle_v1 handle) {
@@ -292,6 +305,31 @@ static inline mercan_tensor_handle_v1 mercan_ggml_rope_ext_v1(
         : MERCAN_TENSOR_NONE_V1;
 }
 
+static inline mercan_tensor_handle_v1 mercan_ggml_self_attention_v1(
+        mercan_graph_builder_v1 * builder,
+        mercan_tensor_handle_v1 q,
+        mercan_tensor_handle_v1 k,
+        mercan_tensor_handle_v1 v,
+        mercan_tensor_handle_v1 out_weight,
+        mercan_tensor_handle_v1 out_bias,
+        mercan_tensor_handle_v1 out_scale,
+        float kq_scale,
+        int32_t layer_index) {
+    auto * ud = mercan_ggml_userdata_v1(builder);
+    if (!ud || !ud->self_attention) return MERCAN_TENSOR_NONE_V1;
+    auto * result = ud->self_attention(
+        ud->attention_userdata,
+        mercan_ggml_tensor_from_handle_v1(q),
+        mercan_ggml_tensor_from_handle_v1(k),
+        mercan_ggml_tensor_from_handle_v1(v),
+        mercan_ggml_tensor_from_handle_v1(out_weight),
+        mercan_ggml_tensor_from_handle_v1(out_bias),
+        mercan_ggml_tensor_from_handle_v1(out_scale),
+        kq_scale,
+        layer_index);
+    return result ? mercan_ggml_tensor_to_handle_v1(result) : MERCAN_TENSOR_NONE_V1;
+}
+
 static const mercan_graph_api_v1 MERCAN_GGML_GRAPH_API_V1 = {
     MERCAN_GRAPH_ABI_VERSION,
     sizeof(mercan_graph_api_v1),
@@ -307,6 +345,7 @@ static const mercan_graph_api_v1 MERCAN_GGML_GRAPH_API_V1 = {
     mercan_ggml_matmul_v1,
     mercan_ggml_rms_norm_v1,
     mercan_ggml_rope_ext_v1,
+    mercan_ggml_self_attention_v1,
 };
 
 static inline mercan_graph_builder_v1 mercan_make_ggml_graph_builder_v1(

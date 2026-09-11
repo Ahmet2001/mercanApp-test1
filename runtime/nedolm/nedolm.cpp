@@ -150,6 +150,7 @@ llama_model_nedolm::graph::graph(const llama_model & model, const llm_graph_para
     const mercan_graph_api_v1 & mg = *mercan_graph.api;
     GGML_ASSERT(MERCAN_GRAPH_API_HAS_V1(&mg, rms_norm));
     GGML_ASSERT(MERCAN_GRAPH_API_HAS_V1(&mg, rope_ext));
+    GGML_ASSERT(MERCAN_GRAPH_API_HAS_V1(&mg, self_attention));
 
     const mercan_rope_mode_v1 mercan_rope_mode = mercan_ggml_rope_mode_to_mercan_v1(rope_type);
     GGML_ASSERT(mercan_rope_mode != MERCAN_ROPE_MODE_UNSUPPORTED_V1);
@@ -177,6 +178,36 @@ llama_model_nedolm::graph::graph(const llama_model & model, const llm_graph_para
 
     ggml_tensor * inp_pos = build_inp_pos();
     auto * inp_attn = build_attn_inp_kv_iswa();
+
+    struct nedolm_attention_bridge_v1 {
+        llama_model_nedolm::graph * graph;
+        llm_graph_input_attn_kv_iswa * input;
+    };
+    nedolm_attention_bridge_v1 attention_bridge{this, inp_attn};
+    mercan_graph_userdata.attention_userdata = &attention_bridge;
+    mercan_graph_userdata.self_attention = [](
+            void * opaque,
+            ggml_tensor * q,
+            ggml_tensor * k,
+            ggml_tensor * v,
+            ggml_tensor * out_weight,
+            ggml_tensor * out_bias,
+            ggml_tensor * out_scale,
+            float kq_scale,
+            int32_t layer_index) -> ggml_tensor * {
+        auto * bridge = static_cast<nedolm_attention_bridge_v1 *>(opaque);
+        GGML_ASSERT(bridge && bridge->graph && bridge->input);
+        return bridge->graph->build_attn(
+            bridge->input,
+            out_weight,
+            out_bias,
+            out_scale,
+            q, k, v,
+            nullptr, nullptr, nullptr,
+            kq_scale,
+            layer_index);
+    };
+
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
     // [2, vocab] GET_ROWS token ids -> [2, n_tokens], through Graph ABI v1.
@@ -216,10 +247,18 @@ llama_model_nedolm::graph::graph(const llama_model & model, const llm_graph_para
         cb(Kcur, "Kcur", il);
         cb(Vcur, "Vcur", il);
 
-        cur = build_attn(inp_attn,
-                require_tensor(block_tensor_name(il, "attn_output.weight")), model.layers[il].wo_b, model.layers[il].wo_s,
-                Qcur, Kcur, Vcur, nullptr, nullptr, nullptr,
-                1.0f/sqrtf(float(n_embd_head)), il);
+        mercan_tensor_handle_v1 attn_h = mg.self_attention(
+                &mercan_graph,
+                mercan_ggml_tensor_to_handle_v1(Qcur),
+                mercan_ggml_tensor_to_handle_v1(Kcur),
+                mercan_ggml_tensor_to_handle_v1(Vcur),
+                require_tensor_h(block_tensor_name(il, "attn_output.weight")),
+                mercan_ggml_tensor_to_handle_v1(model.layers[il].wo_b),
+                mercan_ggml_tensor_to_handle_v1(model.layers[il].wo_s),
+                1.0f/sqrtf(float(n_embd_head)),
+                il);
+        cur = mercan_ggml_tensor_from_handle_v1(attn_h);
+        GGML_ASSERT(cur != nullptr);
 
         if (il == n_layer - 1 && inp_out_ids) {
             mercan_tensor_handle_v1 cur_h = mg.get_rows(

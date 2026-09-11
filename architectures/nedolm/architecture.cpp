@@ -21,18 +21,6 @@ int nedolm_validate(const mercan_metadata_v1 * metadata, char * error, size_t er
         return -1;
     }
 
-    const char * format = metadata->get_string(metadata, "mercan.format");
-    if (format && std::strcmp(format, "mercan") != 0) {
-        if (error && error_capacity) std::snprintf(error, error_capacity, "unsupported mercan.format=%s", format);
-        return -2;
-    }
-
-    const int64_t runtime_abi = metadata->get_i64
-        ? metadata->get_i64(metadata, "mercan.runtime_abi", 1) : 1;
-    if (runtime_abi > 1) {
-        if (error && error_capacity) std::snprintf(error, error_capacity, "model requires Mercan runtime ABI %lld, runtime supports 1", static_cast<long long>(runtime_abi));
-        return -3;
-    }
     return 0;
 }
 

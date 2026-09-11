@@ -96,6 +96,24 @@ mercan_model * mercan_model_load(const char * path, mercan_model_params params) 
             return nullptr;
         }
 
+        const std::string mercan_format = mercan_metadata_string(&metadata.view, "mercan.format");
+        if (mercan_format != "mercan") {
+            set_error(mercan_format.empty()
+                ? "model is missing mercan.format=mercan"
+                : "unsupported mercan.format='" + mercan_format + "'");
+            return nullptr;
+        }
+        const int64_t format_version = metadata.view.get_i64(&metadata.view, "mercan.format_version", -1);
+        if (format_version != 1) {
+            set_error("unsupported Mercan model format version " + std::to_string(format_version) + " (runtime supports v1)");
+            return nullptr;
+        }
+        const int64_t runtime_abi = metadata.view.get_i64(&metadata.view, "mercan.runtime_abi", -1);
+        if (runtime_abi != 1) {
+            set_error("unsupported Mercan runtime ABI " + std::to_string(runtime_abi) + " (runtime supports ABI 1)");
+            return nullptr;
+        }
+
         std::string arch_name = mercan_metadata_string(&metadata.view, "general.architecture");
         const mercan_architecture_v1 * arch = nullptr;
         if (!arch_name.empty()) {

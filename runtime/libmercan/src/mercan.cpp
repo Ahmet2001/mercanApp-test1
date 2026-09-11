@@ -2,6 +2,7 @@
 #include "mercan_arch.h"
 #include "mercan_tokenizer.h"
 #include "mercan_internal.hpp"
+#include "generic_backend.hpp"
 #include "llama.h"
 
 #include <algorithm>
@@ -15,6 +16,7 @@
 
 struct mercan_model {
     llama_model * impl = nullptr;
+    mercan_generic_model * generic = nullptr;
     const mercan_architecture_v1 * architecture = nullptr;
     const mercan_tokenizer_v1 * tokenizer = nullptr;
     void * tokenizer_state = nullptr;
@@ -24,6 +26,7 @@ struct mercan_model {
 
 struct mercan_context {
     llama_context * impl = nullptr;
+    mercan_generic_context * generic = nullptr;
     mercan_model * model = nullptr;
 };
 
@@ -164,15 +167,24 @@ mercan_model * mercan_model_load(const char * path, mercan_model_params params) 
             }
         }
 
-        llama_model_params lp = llama_model_default_params();
-        lp.n_gpu_layers = params.n_gpu_layers;
-        lp.load_mode = params.use_mmap ? LLAMA_LOAD_MODE_MMAP : LLAMA_LOAD_MODE_NONE;
-        lp.check_tensors = params.check_tensors;
-
-        llama_model * lm = llama_model_load_from_file(path, lp);
-        if (!lm) {
-            set_error(std::string("backend failed to load ") + arch->name + " model: " + path);
-            return nullptr;
+        const bool generic_external = (arch->flags & MERCAN_ARCH_GRAPH_CALLBACK_V1) &&
+                                      !(arch->flags & MERCAN_ARCH_BACKEND_MANAGED_GRAPH);
+        llama_model * lm = nullptr;
+        mercan_generic_model * gm = nullptr;
+        if (generic_external) {
+            std::string generic_error;
+            gm = mercan_generic_model_load(path, arch, params, generic_error);
+            if (!gm) { set_error(generic_error); return nullptr; }
+        } else {
+            llama_model_params lp = llama_model_default_params();
+            lp.n_gpu_layers = params.n_gpu_layers;
+            lp.load_mode = params.use_mmap ? LLAMA_LOAD_MODE_MMAP : LLAMA_LOAD_MODE_NONE;
+            lp.check_tensors = params.check_tensors;
+            lm = llama_model_load_from_file(path, lp);
+            if (!lm) {
+                set_error(std::string("backend failed to load ") + arch->name + " model: " + path);
+                return nullptr;
+            }
         }
 
         void * tokenizer_state = nullptr;
@@ -180,7 +192,8 @@ mercan_model * mercan_model_load(const char * path, mercan_model_params params) 
             char error[512] = {};
             tokenizer_state = tokenizer->create(&metadata.view, error, sizeof(error));
             if (!tokenizer_state) {
-                llama_model_free(lm);
+                if (lm) llama_model_free(lm);
+                if (gm) mercan_generic_model_free(gm);
                 set_error(std::string("tokenizer '") + tokenizer->name + " initialization failed: " + (error[0] ? error : "unknown error"));
                 return nullptr;
             }
@@ -188,6 +201,7 @@ mercan_model * mercan_model_load(const char * path, mercan_model_params params) 
 
         mercan_model * out = new mercan_model();
         out->impl = lm;
+        out->generic = gm;
         out->architecture = arch;
         out->tokenizer = tokenizer;
         out->tokenizer_state = tokenizer_state;
@@ -209,6 +223,7 @@ void mercan_model_free(mercan_model * model) {
         model->tokenizer->destroy(model->tokenizer_state);
     }
     if (model->impl) llama_model_free(model->impl);
+    if (model->generic) mercan_generic_model_free(model->generic);
     delete model;
 }
 
@@ -222,23 +237,24 @@ const char * mercan_model_tokenizer(const mercan_model * model) {
 
 mercan_context * mercan_context_create(mercan_model * model, mercan_context_params params) {
     g_last_error.clear();
-    if (!model || !model->impl) {
+    if (!model || (!model->impl && !model->generic)) {
         set_error("invalid model");
         return nullptr;
     }
     try {
-        llama_context_params cp = llama_context_default_params();
-        cp.n_ctx = params.n_ctx;
-        cp.n_batch = params.n_batch;
-        cp.n_threads = params.n_threads;
-        cp.n_threads_batch = params.n_threads_batch;
-        llama_context * lc = llama_init_from_model(model->impl, cp);
-        if (!lc) {
-            set_error("failed to create llama context");
-            return nullptr;
+        llama_context * lc = nullptr;
+        mercan_generic_context * gc = nullptr;
+        if (model->generic) {
+            std::string e; gc = mercan_generic_context_create(model->generic, params, e);
+            if (!gc) { set_error(e); return nullptr; }
+        } else {
+            llama_context_params cp = llama_context_default_params();
+            cp.n_ctx = params.n_ctx; cp.n_batch = params.n_batch; cp.n_threads = params.n_threads; cp.n_threads_batch = params.n_threads_batch;
+            lc = llama_init_from_model(model->impl, cp);
+            if (!lc) { set_error("failed to create llama context"); return nullptr; }
         }
         mercan_context * out = new mercan_context();
-        out->impl = lc;
+        out->impl = lc; out->generic = gc;
         out->model = model;
         return out;
     } catch (const std::exception & e) {
@@ -253,6 +269,7 @@ mercan_context * mercan_context_create(mercan_model * model, mercan_context_para
 void mercan_context_free(mercan_context * ctx) {
     if (!ctx) return;
     if (ctx->impl) llama_free(ctx->impl);
+    if (ctx->generic) mercan_generic_context_free(ctx->generic);
     delete ctx;
 }
 
@@ -265,13 +282,14 @@ int32_t mercan_tokenize(
     mercan_token * out_tokens,
     int32_t capacity) {
     g_last_error.clear();
-    if (!model || !model->impl || !text) {
+    if (!model || (!model->impl && !model->generic) || !text) {
         set_error("invalid tokenize arguments");
         return 0;
     }
     if (model->tokenizer && model->tokenizer->encode) {
         return model->tokenizer->encode(model->tokenizer_state, text, text_len, add_special, parse_special, out_tokens, capacity);
     }
+    if (!model->impl) { set_error("generic model requires an external tokenizer encode callback"); return 0; }
     const llama_vocab * vocab = llama_model_get_vocab(model->impl);
     if (!vocab) {
         set_error("model vocabulary is unavailable");
@@ -289,9 +307,12 @@ int32_t mercan_tokenize(
 
 int32_t mercan_decode(mercan_context * ctx, const mercan_token * tokens, int32_t n_tokens) {
     g_last_error.clear();
-    if (!ctx || !ctx->impl || !tokens || n_tokens <= 0) {
+    if (!ctx || (!ctx->impl && !ctx->generic) || !tokens || n_tokens <= 0) {
         set_error("invalid decode arguments");
         return -1;
+    }
+    if (ctx->generic) {
+        std::string e; const int rc = mercan_generic_decode(ctx->generic, tokens, n_tokens, e); if (rc != 0) set_error(e); return rc;
     }
     llama_batch batch = llama_batch_get_one(
         const_cast<llama_token *>(reinterpret_cast<const llama_token *>(tokens)),
@@ -302,35 +323,45 @@ int32_t mercan_decode(mercan_context * ctx, const mercan_token * tokens, int32_t
 }
 
 const float * mercan_logits(mercan_context * ctx) {
-    if (!ctx || !ctx->impl) return nullptr;
-    return llama_get_logits_ith(ctx->impl, -1);
+    if (!ctx) return nullptr;
+    if (ctx->generic) return mercan_generic_logits(ctx->generic);
+    return ctx->impl ? llama_get_logits_ith(ctx->impl, -1) : nullptr;
 }
 
 int32_t mercan_vocab_size(mercan_model * model) {
-    if (!model || !model->impl) return 0;
+    if (!model) return 0;
+    if (model->generic) return mercan_generic_vocab_size(model->generic);
+    if (!model->impl) return 0;
     const llama_vocab * vocab = llama_model_get_vocab(model->impl);
     return vocab ? llama_vocab_n_tokens(vocab) : 0;
 }
 
 uint32_t mercan_context_size(mercan_context * ctx) {
-    if (!ctx || !ctx->impl) return 0;
-    return llama_n_ctx(ctx->impl);
+    if (!ctx) return 0;
+    if (ctx->generic) return mercan_generic_context_size(ctx->generic);
+    return ctx->impl ? llama_n_ctx(ctx->impl) : 0;
 }
 
 mercan_token mercan_bos_token(mercan_model * model) {
-    if (!model || !model->impl) return -1;
+    if (!model) return -1;
+    if (model->generic) return mercan_generic_bos_token(model->generic);
+    if (!model->impl) return -1;
     const llama_vocab * vocab = llama_model_get_vocab(model->impl);
     return vocab ? llama_vocab_bos(vocab) : -1;
 }
 
 mercan_token mercan_eos_token(mercan_model * model) {
-    if (!model || !model->impl) return -1;
+    if (!model) return -1;
+    if (model->generic) return mercan_generic_eos_token(model->generic);
+    if (!model->impl) return -1;
     const llama_vocab * vocab = llama_model_get_vocab(model->impl);
     return vocab ? llama_vocab_eos(vocab) : -1;
 }
 
 mercan_token mercan_pad_token(mercan_model * model) {
-    if (!model || !model->impl) return -1;
+    if (!model) return -1;
+    if (model->generic) return mercan_generic_pad_token(model->generic);
+    if (!model->impl) return -1;
     const llama_vocab * vocab = llama_model_get_vocab(model->impl);
     return vocab ? llama_vocab_pad(vocab) : -1;
 }
@@ -341,10 +372,11 @@ int32_t mercan_token_to_piece(
     char * out,
     int32_t capacity,
     bool special) {
-    if (!model || !model->impl) return 0;
+    if (!model || (!model->impl && !model->generic)) return 0;
     if (model->tokenizer && model->tokenizer->decode_piece) {
         return model->tokenizer->decode_piece(model->tokenizer_state, token, out, capacity, special);
     }
+    if (!model->impl) return 0;
     const llama_vocab * vocab = llama_model_get_vocab(model->impl);
     if (!vocab) return 0;
     return llama_token_to_piece(vocab, token, out, capacity, 0, special);

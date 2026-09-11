@@ -26,6 +26,7 @@ add_subdirectory("${MERCAN_LLAMA_DIR}" "${CMAKE_BINARY_DIR}/llama" EXCLUDE_FROM_
 set(MERCAN_RUNTIME_SOURCES
     runtime/libmercan/src/mercan.cpp
     core/model_loader.cpp
+    core/generic_backend.cpp
     core/architecture_registry.cpp
     core/tokenizer_registry.cpp
     core/plugin_loader.cpp
@@ -86,6 +87,14 @@ if(MERCAN_BUILD_SDK_TESTS)
     add_executable(mercan-plugin-loader-test tests/plugin_loader_test.cpp)
     target_link_libraries(mercan-plugin-loader-test PRIVATE libmercan)
     add_test(NAME mercan-plugin-loader-v1 COMMAND mercan-plugin-loader-test $<TARGET_FILE:mercan_arch_anka>)
+
+    add_executable(mercan-generic-plugin-backend-test tests/generic_plugin_backend_test.cpp)
+    target_include_directories(mercan-generic-plugin-backend-test PRIVATE runtime/libmercan/include "${MERCAN_LLAMA_DIR}/ggml/include")
+    target_link_libraries(mercan-generic-plugin-backend-test PRIVATE libmercan ggml)
+    add_test(NAME mercan-generic-plugin-backend-v1 COMMAND mercan-generic-plugin-backend-test $<TARGET_FILE:mercan_arch_anka> ${CMAKE_CURRENT_BINARY_DIR}/anka-tiny.mercan)
+    if(GGML_CUDA)
+        add_test(NAME mercan-generic-plugin-backend-gpu-v1 COMMAND mercan-generic-plugin-backend-test $<TARGET_FILE:mercan_arch_anka> ${CMAKE_CURRENT_BINARY_DIR}/anka-tiny-gpu.mercan gpu)
+    endif()
 endif()
 
 include(GNUInstallDirs)

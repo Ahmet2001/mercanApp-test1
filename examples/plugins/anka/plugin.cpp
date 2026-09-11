@@ -11,6 +11,25 @@ int anka_probe(const mercan_metadata_v1 * metadata) {
     return arch && std::strcmp(arch, "anka") == 0 ? 100 : 0;
 }
 
+int anka_byte_probe(const mercan_metadata_v1 * metadata) {
+    const char * type = metadata && metadata->get_string ? metadata->get_string(metadata, "mercan.tokenizer.type") : nullptr;
+    return type && std::strcmp(type, "anka-byte") == 0 ? 100 : 0;
+}
+int anka_byte_validate(const mercan_metadata_v1 *, char *, size_t) { return 0; }
+void * anka_byte_create(const mercan_metadata_v1 *, char *, size_t) { return reinterpret_cast<void *>(1); }
+void anka_byte_destroy(void *) {}
+int32_t anka_byte_encode(void *, const char * text, size_t len, bool, bool, mercan_token * out, int32_t cap) {
+    if (!text) return 0; if (cap < static_cast<int32_t>(len)) return -static_cast<int32_t>(len);
+    for (size_t i=0;i<len;++i) out[i]=static_cast<unsigned char>(text[i]); return static_cast<int32_t>(len);
+}
+int32_t anka_byte_piece(void *, mercan_token token, char * out, int32_t cap, bool) {
+    if (token < 0 || token > 255) return 0; if (cap < 1) return -1; out[0]=static_cast<char>(token); return 1;
+}
+const mercan_tokenizer_v1 ANKA_BYTE = {
+    MERCAN_TOKENIZER_ABI_VERSION, sizeof(mercan_tokenizer_v1), "anka-byte", "Anka byte tokenizer", 0,
+    anka_byte_probe, anka_byte_validate, anka_byte_create, anka_byte_destroy, anka_byte_encode, anka_byte_piece,
+};
+
 int anka_validate(const mercan_metadata_v1 * metadata, char * error, size_t error_capacity) {
     const char * arch = metadata && metadata->get_string ? metadata->get_string(metadata, "general.architecture") : nullptr;
     if (!arch || std::strcmp(arch, "anka") != 0) {
@@ -68,7 +87,7 @@ const mercan_architecture_v1 ANKA_ARCH = {
     sizeof(mercan_architecture_v1),
     "anka",
     "Anka external demo architecture",
-    "ndsurf004",
+    "anka-byte",
     MERCAN_ARCH_GRAPH_ABI_V1_PRIMITIVES | MERCAN_ARCH_TENSOR_ABI_V1 | MERCAN_ARCH_GRAPH_CALLBACK_V1,
     anka_probe,
     anka_validate,
@@ -81,6 +100,9 @@ int anka_init(const mercan_plugin_host_v1 * host, char * error, size_t error_cap
         if (error && error_capacity) std::snprintf(error, error_capacity, "incompatible Mercan plugin host");
         return -1;
     }
+    if (!host->register_tokenizer) { if (error && error_capacity) std::snprintf(error, error_capacity, "Mercan host has no tokenizer registry"); return -2; }
+    const int trc = host->register_tokenizer(&ANKA_BYTE);
+    if (trc != 0 && trc != 1) { if (error && error_capacity) std::snprintf(error, error_capacity, "tokenizer registration failed: %d", trc); return -3; }
     const int rc = host->register_architecture(&ANKA_ARCH);
     if (rc != 0 && rc != 1) {
         if (error && error_capacity) std::snprintf(error, error_capacity, "architecture registration failed: %d", rc);

@@ -209,3 +209,16 @@ is executed by the permanent plugin-loader test. This establishes executable ext
 graph dispatch. Full arbitrary-model inference still requires the generic Mercan model
 loader/backend adapter to create model tensors and graph inputs without llama.cpp's
 compiled architecture factory.
+
+
+## Generic external architecture backend
+
+Architectures advertising `MERCAN_ARCH_GRAPH_CALLBACK_V1` without `MERCAN_ARCH_BACKEND_MANAGED_GRAPH`
+are loaded by Mercan's generic GGUF/ggml backend adapter. The adapter loads named tensors directly from the
+`.mercan` container, creates opaque Tensor/Graph ABI handles, invokes the plugin's `build_graph` callback, and
+executes the resulting graph without requiring a compiled llama.cpp model class for that architecture.
+
+The `anka` example also registers an external `anka-byte` tokenizer. The SDK regression builds a tiny Anka
+`.mercan` model and verifies the complete `plugin load -> model load -> tokenize -> graph build -> backend compute -> logits`
+path. CPU is the baseline; when a GPU device is available and `n_gpu_layers != 0`, the same generic adapter selects
+that ggml GPU backend and uploads the model tensors there.

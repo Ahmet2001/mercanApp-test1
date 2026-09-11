@@ -31,6 +31,8 @@ enum mercan_arch_flags_v1 {
     MERCAN_ARCH_BACKEND_MANAGED_GRAPH = 1ull << 0,
     /* Architecture is bundled with the Mercan runtime rather than loaded externally. */
     MERCAN_ARCH_BUILTIN = 1ull << 1,
+    /* Architecture exercises Mercan Graph ABI v1 primitives inside its backend graph. */
+    MERCAN_ARCH_GRAPH_ABI_V1_PRIMITIVES = 1ull << 2,
 };
 
 typedef struct mercan_architecture_v1 {

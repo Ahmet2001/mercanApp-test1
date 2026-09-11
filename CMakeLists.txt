@@ -64,4 +64,5 @@ install(FILES
     runtime/libmercan/include/mercan.h
     runtime/libmercan/include/mercan_arch.h
     runtime/libmercan/include/mercan_tokenizer.h
+    runtime/libmercan/include/mercan_graph.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

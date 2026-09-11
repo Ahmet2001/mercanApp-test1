@@ -1,5 +1,6 @@
 #include "mercan.h"
 #include "mercan_arch.h"
+#include "mercan_graph.h"
 #include "mercan_tokenizer.h"
 
 #include <algorithm>
@@ -249,6 +250,7 @@ static void print_help() {
         << "  mercan pull <owner/repo[:file.mercan]>\n"
         << "  mercan arch list\n"
         << "  mercan tokenizer list\n"
+        << "  mercan graph abi\n"
         << "  mercan --version\n\n"
         << "Run options:\n"
         << "  -p, --prompt TEXT       single-shot prompt (otherwise interactive)\n"
@@ -339,9 +341,20 @@ static int command_arch(int argc, char ** argv) {
         std::cout << arch->name;
         if (arch->display_name && *arch->display_name) std::cout << "\t" << arch->display_name;
         if (arch->default_tokenizer && *arch->default_tokenizer) std::cout << "\ttokenizer=" << arch->default_tokenizer;
+        if (arch->flags & MERCAN_ARCH_GRAPH_ABI_V1_PRIMITIVES) std::cout << "\tgraph-abi-v1";
         if (arch->flags & MERCAN_ARCH_BUILTIN) std::cout << "\tbuiltin";
         std::cout << "\n";
     }
+    return 0;
+}
+
+static int command_graph(int argc, char ** argv) {
+    if (argc != 3 || std::string(argv[2]) != "abi") {
+        die("usage: mercan graph abi");
+    }
+    std::cout << "Mercan Graph ABI " << MERCAN_GRAPH_ABI_VERSION << "\n"
+              << "tensor_handles=opaque\n"
+              << "primitives=get_rows,cast_f32,swiglu_split,view_2d,mul,add,concat\n";
     return 0;
 }
 
@@ -378,6 +391,7 @@ int main(int argc, char ** argv) {
     if (cmd == "-h" || cmd == "--help" || cmd == "help") { print_help(); return 0; }
     if (cmd == "arch") return command_arch(argc, argv);
     if (cmd == "tokenizer") return command_tokenizer(argc, argv);
+    if (cmd == "graph") return command_graph(argc, argv);
     if (cmd == "pull") {
         if (argc < 3) die("missing Hugging Face repository");
         const auto p = pull_hf(parse_hf_spec(argv[2]), argc > 3 && std::string(argv[3]) == "--force");

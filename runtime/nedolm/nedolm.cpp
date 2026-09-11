@@ -1,4 +1,5 @@
 #include "models.h"
+#include "mercan_graph_ggml.hpp"
 
 void llama_model_nedolm::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
@@ -75,6 +76,15 @@ llama_model_nedolm::graph::graph(const llama_model & model, const llm_graph_para
     const int64_t morph_root = static_cast<int64_t>(nedolm.morph_root_width);
     const int64_t morph_suffix = static_cast<int64_t>(nedolm.morph_suffix_width);
 
+    // Mercan Graph ABI v1 deliberately exposes opaque tensor handles.  The
+    // current backend adapter maps them to ggml tensors internally, while the
+    // architecture code below uses only the stable operation table for the
+    // MorphFFN-specific primitive sequence.
+    mercan_ggml_graph_userdata_v1 mercan_graph_userdata{ctx0};
+    mercan_graph_builder_v1 mercan_graph = mercan_make_ggml_graph_builder_v1(&mercan_graph_userdata);
+    GGML_ASSERT(mercan_graph_builder_valid_v1(&mercan_graph));
+    const mercan_graph_api_v1 & mg = *mercan_graph.api;
+
     const int64_t n_embd_head = hparams.n_embd_head_v();
     GGML_ASSERT(n_embd_head == hparams.n_embd_head_k());
     GGML_ASSERT(n_embd_head == n_rot);
@@ -88,9 +98,14 @@ llama_model_nedolm::graph::graph(const llama_model & model, const llm_graph_para
     auto * inp_attn = build_attn_inp_kv_iswa();
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
-    // [2, vocab] GET_ROWS token ids -> [2, n_tokens]
-    ggml_tensor * role_mask = ggml_get_rows(ctx0, model.layers[0].ffn_gate_tid2eid, inp_tokens);
-    role_mask = ggml_cast(ctx0, role_mask, GGML_TYPE_F32);
+    // [2, vocab] GET_ROWS token ids -> [2, n_tokens], through Graph ABI v1.
+    mercan_tensor_handle_v1 role_mask_h = mg.get_rows(
+        &mercan_graph,
+        mercan_ggml_tensor_to_handle_v1(model.layers[0].ffn_gate_tid2eid),
+        mercan_ggml_tensor_to_handle_v1(inp_tokens));
+    role_mask_h = mg.cast_f32(&mercan_graph, role_mask_h);
+    ggml_tensor * role_mask = mercan_ggml_tensor_from_handle_v1(role_mask_h);
+    GGML_ASSERT(role_mask != nullptr);
     cb(role_mask, "nedolm_role_mask", -1);
 
     for (int il = 0; il < n_layer; ++il) {
@@ -126,20 +141,33 @@ llama_model_nedolm::graph::graph(const llama_model & model, const llm_graph_para
         if (il < static_cast<int>(nedolm.morph_layer_count)) {
             ggml_tensor * up = build_lora_mm(model.layers[il].ffn_up, cur);
             ggml_tensor * gate = build_lora_mm(model.layers[il].ffn_gate, cur);
-            ggml_tensor * z = ggml_swiglu_split(ctx0, gate, up);
+
+            mercan_tensor_handle_v1 z_h = mg.swiglu_split(
+                &mercan_graph, mercan_ggml_tensor_to_handle_v1(gate), mercan_ggml_tensor_to_handle_v1(up));
+            GGML_ASSERT(z_h != MERCAN_TENSOR_NONE_V1);
+            ggml_tensor * z = mercan_ggml_tensor_from_handle_v1(z_h);
             cb(z, "nedolm_swiglu", il);
 
-            ggml_tensor * shared = ggml_view_2d(ctx0, z, morph_shared, z->ne[1], z->nb[1], 0);
-            ggml_tensor * root = ggml_view_2d(ctx0, z, morph_root, z->ne[1], z->nb[1], morph_shared * z->nb[0]);
-            ggml_tensor * suffix = ggml_view_2d(ctx0, z, morph_suffix, z->ne[1], z->nb[1], (morph_shared + morph_root) * z->nb[0]);
+            const int64_t z_rows = mg.dim(&mercan_graph, z_h, 1);
+            const size_t z_nb0 = mg.stride_bytes(&mercan_graph, z_h, 0);
+            const size_t z_nb1 = mg.stride_bytes(&mercan_graph, z_h, 1);
+            const int64_t role_rows = mg.dim(&mercan_graph, role_mask_h, 1);
+            const size_t role_nb0 = mg.stride_bytes(&mercan_graph, role_mask_h, 0);
+            const size_t role_nb1 = mg.stride_bytes(&mercan_graph, role_mask_h, 1);
 
-            ggml_tensor * root_gate = ggml_view_2d(ctx0, role_mask, 1, role_mask->ne[1], role_mask->nb[1], 0);
-            ggml_tensor * suffix_gate = ggml_view_2d(ctx0, role_mask, 1, role_mask->ne[1], role_mask->nb[1], role_mask->nb[0]);
-            root = ggml_mul(ctx0, root, root_gate);
-            suffix = ggml_mul(ctx0, suffix, suffix_gate);
+            mercan_tensor_handle_v1 shared_h = mg.view_2d(&mercan_graph, z_h, morph_shared, z_rows, z_nb1, 0);
+            mercan_tensor_handle_v1 root_h = mg.view_2d(&mercan_graph, z_h, morph_root, z_rows, z_nb1, morph_shared * z_nb0);
+            mercan_tensor_handle_v1 suffix_h = mg.view_2d(&mercan_graph, z_h, morph_suffix, z_rows, z_nb1, (morph_shared + morph_root) * z_nb0);
 
-            z = ggml_concat(ctx0, shared, root, 0);
-            z = ggml_concat(ctx0, z, suffix, 0);
+            mercan_tensor_handle_v1 root_gate_h = mg.view_2d(&mercan_graph, role_mask_h, 1, role_rows, role_nb1, 0);
+            mercan_tensor_handle_v1 suffix_gate_h = mg.view_2d(&mercan_graph, role_mask_h, 1, role_rows, role_nb1, role_nb0);
+            root_h = mg.mul(&mercan_graph, root_h, root_gate_h);
+            suffix_h = mg.mul(&mercan_graph, suffix_h, suffix_gate_h);
+
+            z_h = mg.concat(&mercan_graph, shared_h, root_h, 0);
+            z_h = mg.concat(&mercan_graph, z_h, suffix_h, 0);
+            z = mercan_ggml_tensor_from_handle_v1(z_h);
+            GGML_ASSERT(z != nullptr);
             cur = build_lora_mm(model.layers[il].ffn_down, z);
         } else {
             cur = build_ffn(cur,

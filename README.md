@@ -45,6 +45,7 @@ mercan run <model.mercan|owner/repo[:file.mercan]>
 mercan pull <owner/repo[:file.mercan]>
 mercan arch list
 mercan tokenizer list
+mercan graph abi
 mercan --version
 ```
 
@@ -96,7 +97,9 @@ PyTorch / Hugging Face checkpoint
 
 Mercan also ships Architecture SDK v1. `libmercan` reads `general.architecture` before backend loading, resolves a registered `mercan_architecture_v1`, validates the model, then resolves a `mercan_tokenizer_v1`. NedoLM/NDSRF004 are the first built-in providers rather than special cases in Mercan model dispatch.
 
-See `spec/MERCAN_FORMAT_V1.md` and `docs/ARCHITECTURE_SDK.md`.
+Mercan Graph ABI v1 adds a backend-independent tensor-operation boundary based on opaque `mercan_tensor_handle_v1` values. NedoLM's MorphFFN-specific primitive path is already exercised through this ABI in real inference; attention, RoPE, KV-cache and several model/tensor ownership operations remain backend-managed during the staged migration.
+
+See `spec/MERCAN_FORMAT_V1.md`, `docs/ARCHITECTURE_SDK.md` and `docs/GRAPH_ABI_V1.md`.
 
 ## Build from source
 
@@ -168,10 +171,12 @@ The CLI expects `model.mercan` as the default artifact when a Hugging Face repos
 
 Custom families register through the versioned public descriptors in `mercan_arch.h` and `mercan_tokenizer.h`. Model dispatch no longer needs per-family branches inside `mercan.cpp`.
 
-Architecture SDK v1 deliberately keeps tensor graph execution backend-managed. A completely new neural architecture currently needs a Mercan architecture provider **and** graph/tensor support in the compiled backend. The future graph ABI will introduce Mercan-owned graph abstractions before external `.so` architecture plugins are declared stable.
+Architecture SDK v1 is now paired with the experimental Mercan Graph ABI v1. The first primitive set covers tensor shape/stride inspection, row gathering, F32 cast, SwiGLU split, 2D views, multiplication, addition and concatenation. NedoLM uses these primitives for its MorphFFN-specific path.
 
-See `docs/ARCHITECTURE_SDK.md` and `examples/custom_arch/`.
+A completely new architecture can use these backend-independent primitives today, but operations not yet represented by Graph ABI v1 still require compiled backend support. External `.so`/`.dylib` graph plugins are therefore not declared stable yet.
+
+See `docs/ARCHITECTURE_SDK.md`, `docs/GRAPH_ABI_V1.md` and `examples/custom_arch/`.
 
 ## Current v1 scope
 
-Mercan v1 includes the portable model format, converter, exact tokenizer bridge, native runtime ABI, Architecture/Tokenizer SDK registries, local/Hugging Face CLI workflow and Linux packaging. An HTTP server/API layer and stable external shared-object plugin loader are intentionally left for later stages.
+Mercan v1 includes the portable model format, converter, exact tokenizer bridge, native runtime ABI, Architecture/Tokenizer SDK registries, experimental Graph ABI v1, local/Hugging Face CLI workflow and Linux packaging. An HTTP server/API layer and stable external shared-object plugin loader are intentionally left for later stages.

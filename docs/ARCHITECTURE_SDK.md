@@ -19,6 +19,20 @@ Public headers installed by Mercan:
 
 The public ABI intentionally exposes no `llama_model`, `llama_context`, `ggml_tensor *`, or other llama.cpp/ggml internal C++ types.
 
+## Descriptor compatibility
+
+Architecture and tokenizer descriptors use an append-only v1 layout. The runtime accepts the stable minimum prefixes `MERCAN_ARCHITECTURE_V1_BASE_SIZE` and `MERCAN_TOKENIZER_V1_BASE_SIZE`, copies only the bytes advertised by `struct_size`, and zero-fills the remaining tail. New callbacks may therefore be appended without making an older v1 provider invalid.
+
+Use `MERCAN_ARCH_HAS_V1(desc, member)` and `MERCAN_TOKENIZER_HAS_V1(desc, member)` when code needs to distinguish whether a tail field was actually supplied by the provider. Callback fields are optional unless a specific capability requires them.
+
+The regression target can be built with:
+
+```bash
+cmake -S . -B build/sdk-test -DMERCAN_BUILD_SDK_TESTS=ON -DMERCAN_LLAMA_DIR=...
+cmake --build build/sdk-test --target mercan-sdk-prefix-test
+ctest --test-dir build/sdk-test -R mercan-sdk-prefix-compat --output-on-failure
+```
+
 ## Architecture registry
 
 An architecture provider exports a `mercan_architecture_v1` descriptor and registers it with `mercan_arch_register_v1()`.

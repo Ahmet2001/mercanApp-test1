@@ -50,6 +50,12 @@ typedef struct mercan_architecture_v1 {
     int (*validate)(const mercan_metadata_v1 * metadata, char * error, size_t error_capacity);
 } mercan_architecture_v1;
 
+/* Minimum v1 descriptor prefix: identity/defaults/flags. Callbacks are optional. */
+#define MERCAN_ARCHITECTURE_V1_BASE_SIZE ((size_t) offsetof(mercan_architecture_v1, probe))
+#define MERCAN_ARCH_HAS_V1(desc, member) \
+    ((desc) != NULL && (desc)->struct_size >= \
+        (offsetof(mercan_architecture_v1, member) + sizeof((desc)->member)))
+
 /* Registry API. The descriptor memory and strings must remain valid while registered. */
 MERCAN_API int mercan_arch_register_v1(const mercan_architecture_v1 * architecture);
 MERCAN_API const mercan_architecture_v1 * mercan_arch_find_v1(const char * name);

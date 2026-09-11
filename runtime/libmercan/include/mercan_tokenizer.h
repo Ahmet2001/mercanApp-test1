@@ -38,6 +38,12 @@ typedef struct mercan_tokenizer_v1 {
                             char * out, int32_t capacity, bool special);
 } mercan_tokenizer_v1;
 
+/* Minimum v1 descriptor prefix: identity and flags. All callbacks are optional. */
+#define MERCAN_TOKENIZER_V1_BASE_SIZE ((size_t) offsetof(mercan_tokenizer_v1, probe))
+#define MERCAN_TOKENIZER_HAS_V1(desc, member) \
+    ((desc) != NULL && (desc)->struct_size >= \
+        (offsetof(mercan_tokenizer_v1, member) + sizeof((desc)->member)))
+
 MERCAN_API int mercan_tokenizer_register_v1(const mercan_tokenizer_v1 * tokenizer);
 MERCAN_API const mercan_tokenizer_v1 * mercan_tokenizer_find_v1(const char * name);
 MERCAN_API size_t mercan_tokenizer_count_v1(void);

@@ -1,6 +1,7 @@
 #include "mercan_arch.h"
 #include "mercan_internal.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -12,7 +13,7 @@ std::vector<std::unique_ptr<mercan_architecture_v1>> g_architectures;
 
 bool valid_arch_descriptor(const mercan_architecture_v1 * arch) {
     return arch && arch->abi_version == MERCAN_ARCH_ABI_VERSION &&
-           arch->struct_size >= sizeof(mercan_architecture_v1) &&
+           arch->struct_size >= MERCAN_ARCHITECTURE_V1_BASE_SIZE &&
            arch->name && *arch->name;
 }
 }
@@ -25,7 +26,12 @@ int mercan_arch_register_v1(const mercan_architecture_v1 * architecture) {
     for (const auto & item : g_architectures) {
         if (std::strcmp(item->name, architecture->name) == 0) return 1;
     }
-    g_architectures.emplace_back(std::make_unique<mercan_architecture_v1>(*architecture));
+    auto stored = std::make_unique<mercan_architecture_v1>();
+    std::memset(stored.get(), 0, sizeof(*stored));
+    const size_t copy_size = std::min<size_t>(architecture->struct_size, sizeof(*stored));
+    std::memcpy(stored.get(), architecture, copy_size);
+    stored->struct_size = static_cast<uint32_t>(copy_size);
+    g_architectures.emplace_back(std::move(stored));
     return 0;
 }
 

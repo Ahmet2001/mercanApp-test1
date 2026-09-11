@@ -171,6 +171,8 @@ The CLI expects `model.mercan` as the default artifact when a Hugging Face repos
 
 Custom families register through the versioned public descriptors in `mercan_arch.h` and `mercan_tokenizer.h`. Model dispatch no longer needs per-family branches inside `mercan.cpp`.
 
+Architecture/tokenizer descriptors are append-only within ABI v1: Mercan accepts a stable minimum prefix, copies only `struct_size` bytes and zero-fills newer tail fields. Optional regression coverage is available with `-DMERCAN_BUILD_SDK_TESTS=ON`.
+
 Architecture SDK v1 is paired with the experimental Mercan Graph ABI v1. The primitive table now covers tensor shape/stride inspection, row gathering, F32 cast, SwiGLU split, 2D views, multiplication, addition, concatenation, plain matrix multiplication, RMSNorm and NORMAL/NEOX RoPE. NedoLM uses these primitives in its real inference graph.
 
 A completely new architecture can use these backend-independent primitives today, but operations not yet represented by Graph ABI v1 still require compiled backend support. External `.so`/`.dylib` graph plugins are therefore not declared stable yet.

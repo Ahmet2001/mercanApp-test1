@@ -7,6 +7,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 set(MERCAN_LLAMA_DIR "${CMAKE_SOURCE_DIR}/build/_deps/llama-src" CACHE PATH "Path to patched llama.cpp source")
 option(MERCAN_BUILD_SHARED "Build libmercan as a shared library" OFF)
+option(MERCAN_BUILD_SDK_TESTS "Build Mercan SDK ABI regression tests" OFF)
 
 if(NOT EXISTS "${MERCAN_LLAMA_DIR}/CMakeLists.txt")
     message(FATAL_ERROR "Patched llama.cpp not found at ${MERCAN_LLAMA_DIR}. Run scripts/prepare_llama.sh first or set MERCAN_LLAMA_DIR.")
@@ -53,6 +54,13 @@ add_executable(mercan cli/main.cpp)
 target_link_libraries(mercan PRIVATE libmercan)
 if(GGML_CUDA)
     target_compile_definitions(mercan PRIVATE MERCAN_CUDA_BUILD=1)
+endif()
+
+if(MERCAN_BUILD_SDK_TESTS)
+    enable_testing()
+    add_executable(mercan-sdk-prefix-test tests/sdk_prefix_compat.cpp)
+    target_link_libraries(mercan-sdk-prefix-test PRIVATE libmercan)
+    add_test(NAME mercan-sdk-prefix-compat COMMAND mercan-sdk-prefix-test)
 endif()
 
 include(GNUInstallDirs)

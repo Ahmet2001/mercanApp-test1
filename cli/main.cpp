@@ -2,6 +2,7 @@
 #include "mercan_arch.h"
 #include "mercan_graph.h"
 #include "mercan_kv.h"
+#include "mercan_plugin.h"
 #include "mercan_tensor.h"
 #include "mercan_tokenizer.h"
 
@@ -189,6 +190,7 @@ struct run_options {
     int top_k = 40;
     float top_p = 0.95f;
     int threads = 0;
+    std::vector<std::string> plugins;
 #ifdef MERCAN_CUDA_BUILD
     int gpu_layers = -1;
 #else
@@ -255,6 +257,8 @@ static void print_help() {
         << "  mercan graph abi\n"
         << "  mercan tensor abi\n"
         << "  mercan kv abi\n"
+        << "  mercan plugin list\n"
+        << "  mercan plugin load <library>\n"
         << "  mercan --version\n\n"
         << "Run options:\n"
         << "  -p, --prompt TEXT       single-shot prompt (otherwise interactive)\n"
@@ -263,11 +267,33 @@ static void print_help() {
         << "  --top-k N               top-k sampling (default 40)\n"
         << "  --top-p F               nucleus cutoff (default 0.95)\n"
         << "  -t, --threads N         CPU threads\n"
+        << "  --plugin PATH           load external architecture/tokenizer plugin\n"
         << "  --gpu-layers N          GPU layers (-1 = all; CUDA build defaults to -1)\n\n"
         << "Examples:\n"
         << "  mercan run model.mercan\n"
         << "  mercan run Ahmet2001/Mercan-0.8B-SFT\n"
         << "  mercan run Ahmet2001/Mercan-0.8B-SFT:model-q4.mercan -p \"Merhaba\"\n";
+}
+
+static void load_plugin_or_die(const std::string & path) {
+    const int rc = mercan_plugin_load_v1(path.c_str());
+    if (rc < 0) die(std::string("plugin load failed: ") + mercan_plugin_last_error_v1());
+}
+
+static void load_plugins_from_env() {
+    const char * raw = std::getenv("MERCAN_PLUGINS");
+    if (!raw || !*raw) return;
+    const char separator =
+#ifdef _WIN32
+        ';';
+#else
+        ':';
+#endif
+    std::stringstream ss(raw);
+    std::string item;
+    while (std::getline(ss, item, separator)) {
+        if (!item.empty()) load_plugin_or_die(item);
+    }
 }
 
 static int command_run(int argc, char ** argv) {
@@ -286,11 +312,13 @@ static int command_run(int argc, char ** argv) {
         else if (a == "--top-k") opt.top_k = std::stoi(need(a.c_str()));
         else if (a == "--top-p") opt.top_p = std::stof(need(a.c_str()));
         else if (a == "-t" || a == "--threads") opt.threads = std::stoi(need(a.c_str()));
+        else if (a == "--plugin") opt.plugins.push_back(need(a.c_str()));
         else if (a == "--gpu-layers") opt.gpu_layers = std::stoi(need(a.c_str()));
         else if (a == "-h" || a == "--help") { print_help(); return 0; }
         else die("unknown option: " + a);
     }
 
+    for (const auto & plugin : opt.plugins) load_plugin_or_die(plugin);
     fs::path model_path = resolve_model(opt.model);
     mercan_backend_init();
     mercan_model_params mp = mercan_model_default_params();
@@ -368,6 +396,28 @@ static int command_graph(int argc, char ** argv) {
 }
 
 
+static int command_plugin(int argc, char ** argv) {
+    if (argc < 3) die("usage: mercan plugin <list|load PATH>");
+    const std::string action = argv[2];
+    if (action == "load") {
+        if (argc != 4) die("usage: mercan plugin load <library>");
+        load_plugin_or_die(argv[3]);
+    } else if (action != "list") {
+        die("usage: mercan plugin <list|load PATH>");
+    }
+    std::cout << "Mercan Plugin ABI " << MERCAN_PLUGIN_ABI_VERSION << "\n";
+    for (size_t i = 0; i < mercan_plugin_count_v1(); ++i) {
+        const char * name = mercan_plugin_name_v1(i);
+        const char * version = mercan_plugin_version_v1(i);
+        const char * path = mercan_plugin_path_v1(i);
+        std::cout << (name ? name : "<unnamed>");
+        if (version && *version) std::cout << "\tversion=" << version;
+        if (path && *path) std::cout << "\t" << path;
+        std::cout << "\n";
+    }
+    return 0;
+}
+
 static int command_kv(int argc, char ** argv) {
     if (argc != 3 || std::string(argv[2]) != "abi") {
         die("usage: mercan kv abi");
@@ -412,6 +462,7 @@ static int command_tokenizer(int argc, char ** argv) {
 int main(int argc, char ** argv) {
     if (argc < 2) { print_help(); return 0; }
     const std::string cmd = argv[1];
+    load_plugins_from_env(); // MERCAN_PLUGINS
     if (cmd == "--version" || cmd == "version") {
         std::cout << "mercan " << VERSION << " (libmercan " << mercan_version()
 #ifdef MERCAN_CUDA_BUILD
@@ -427,6 +478,7 @@ int main(int argc, char ** argv) {
     if (cmd == "graph") return command_graph(argc, argv);
     if (cmd == "tensor") return command_tensor(argc, argv);
     if (cmd == "kv") return command_kv(argc, argv);
+    if (cmd == "plugin") return command_plugin(argc, argv);
     if (cmd == "pull") {
         if (argc < 3) die("missing Hugging Face repository");
         const auto p = pull_hf(parse_hf_spec(argv[2]), argc > 3 && std::string(argv[3]) == "--force");

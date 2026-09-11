@@ -179,3 +179,18 @@ Cache allocation, lifetime and mutation are deliberately runtime-owned in v1. Ar
 ## Graph output and finalization
 
 Graph ABI v1 now provides append-only `set_output` and `finalize` capabilities. Architecture code publishes embedding/logit/hidden outputs through stable output kinds and finalizes the graph root without touching llama.cpp `llm_graph_result` or `ggml_cgraph` internals. Plugins must capability-probe both callbacks before use.
+
+
+## Dynamic plugin loading
+
+Mercan Plugin ABI v1 (`mercan_plugin.h`) loads external native libraries with `dlopen`/`dlsym` on Unix-like systems and `LoadLibrary`/`GetProcAddress` on Windows. A plugin exports `mercan_plugin_entry_v1()` and receives host callbacks for architecture/tokenizer registration; it does not need to link against Mercan internals. Loaded libraries remain resident for process lifetime so descriptor strings and callbacks stay valid.
+
+CLI usage:
+
+```bash
+mercan plugin load ./libmercan_arch_anka.so
+MERCAN_PLUGINS=./libmercan_arch_anka.so mercan arch list
+mercan run model.mercan --plugin ./libmercan_arch_anka.so
+```
+
+`examples/plugins/anka` is a real separately-built `.so` registration test. It proves discovery and ABI-safe registration. It intentionally does not claim an inference backend yet; executable third-party graph dispatch is the next SDK boundary.

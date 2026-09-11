@@ -28,6 +28,7 @@ set(MERCAN_RUNTIME_SOURCES
     core/model_loader.cpp
     core/architecture_registry.cpp
     core/tokenizer_registry.cpp
+    core/plugin_loader.cpp
     core/builtin_plugins.cpp
     architectures/nedolm/architecture.cpp
     architectures/nedolm/tokenizer.cpp
@@ -48,7 +49,7 @@ target_include_directories(libmercan
         "${CMAKE_SOURCE_DIR}/core"
         "${MERCAN_LLAMA_DIR}/include"
         "${MERCAN_LLAMA_DIR}/ggml/include")
-target_link_libraries(libmercan PUBLIC llama)
+target_link_libraries(libmercan PUBLIC llama ${CMAKE_DL_LIBS})
 
 add_executable(mercan cli/main.cpp)
 target_link_libraries(mercan PRIVATE libmercan)
@@ -77,6 +78,14 @@ if(MERCAN_BUILD_SDK_TESTS)
     add_executable(mercan-graph-output-abi-test tests/graph_output_abi_compile.cpp)
     target_include_directories(mercan-graph-output-abi-test PRIVATE runtime/libmercan/include)
     add_test(NAME mercan-graph-output-abi-v1 COMMAND mercan-graph-output-abi-test)
+
+    add_library(mercan_arch_anka MODULE examples/plugins/anka/plugin.cpp)
+    target_include_directories(mercan_arch_anka PRIVATE runtime/libmercan/include)
+    set_target_properties(mercan_arch_anka PROPERTIES OUTPUT_NAME "mercan_arch_anka")
+
+    add_executable(mercan-plugin-loader-test tests/plugin_loader_test.cpp)
+    target_link_libraries(mercan-plugin-loader-test PRIVATE libmercan)
+    add_test(NAME mercan-plugin-loader-v1 COMMAND mercan-plugin-loader-test $<TARGET_FILE:mercan_arch_anka>)
 endif()
 
 include(GNUInstallDirs)
@@ -91,4 +100,5 @@ install(FILES
     runtime/libmercan/include/mercan_tensor.h
     runtime/libmercan/include/mercan_graph.h
     runtime/libmercan/include/mercan_kv.h
+    runtime/libmercan/include/mercan_plugin.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

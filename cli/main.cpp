@@ -362,6 +362,7 @@ static int command_graph(int argc, char ** argv) {
               << "tensor_handles=opaque\n"
               << "primitives=get_rows,cast_f32,swiglu_split,view_2d,mul,add,concat,matmul,rms_norm,rope_ext,self_attention\n"
               << "attention=runtime-owned-mask-and-cache\n"
+              << "outputs=set_output,finalize\n"
               << "tensor_resolver=tensor-abi-v1\n";
     return 0;
 }

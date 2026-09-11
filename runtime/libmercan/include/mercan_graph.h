@@ -21,6 +21,12 @@ typedef enum mercan_rope_mode_v1 {
     MERCAN_ROPE_MODE_NEOX_V1 = 1,
 } mercan_rope_mode_v1;
 
+typedef enum mercan_graph_output_kind_v1 {
+    MERCAN_GRAPH_OUTPUT_EMBEDDING_V1 = 1,
+    MERCAN_GRAPH_OUTPUT_LOGITS_V1 = 2,
+    MERCAN_GRAPH_OUTPUT_HIDDEN_V1 = 3,
+} mercan_graph_output_kind_v1;
+
 typedef struct mercan_graph_api_v1 {
     uint32_t abi_version;
     uint32_t struct_size;
@@ -84,6 +90,15 @@ typedef struct mercan_graph_api_v1 {
                                               mercan_tensor_handle_v1 out_scale,
                                               float kq_scale,
                                               int32_t layer_index);
+
+    /* Publish architecture outputs without exposing backend graph-result structs. */
+    int (*set_output)(mercan_graph_builder_v1 * builder,
+                      mercan_graph_output_kind_v1 kind,
+                      mercan_tensor_handle_v1 tensor);
+
+    /* Mark the final graph root / trigger backend graph finalization. */
+    int (*finalize)(mercan_graph_builder_v1 * builder,
+                    mercan_tensor_handle_v1 root);
 } mercan_graph_api_v1;
 
 /* The original Graph ABI v1 prefix ends at concat. Later v1 fields are append-only. */

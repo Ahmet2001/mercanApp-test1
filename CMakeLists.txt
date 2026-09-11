@@ -73,6 +73,10 @@ if(MERCAN_BUILD_SDK_TESTS)
     add_executable(mercan-kv-abi-test tests/kv_abi_compile.cpp)
     target_include_directories(mercan-kv-abi-test PRIVATE runtime/libmercan/include)
     add_test(NAME mercan-kv-abi-v1 COMMAND mercan-kv-abi-test)
+
+    add_executable(mercan-graph-output-abi-test tests/graph_output_abi_compile.cpp)
+    target_include_directories(mercan-graph-output-abi-test PRIVATE runtime/libmercan/include)
+    add_test(NAME mercan-graph-output-abi-v1 COMMAND mercan-graph-output-abi-test)
 endif()
 
 include(GNUInstallDirs)

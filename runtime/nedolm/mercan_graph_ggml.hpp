@@ -35,10 +35,17 @@ using mercan_ggml_self_attention_callback_v1 = ggml_tensor * (*)(
     float kq_scale,
     int32_t layer_index);
 
+using mercan_ggml_set_output_callback_v1 = int (*)(
+    void * userdata, mercan_graph_output_kind_v1 kind, ggml_tensor * tensor);
+using mercan_ggml_finalize_callback_v1 = int (*)(void * userdata, ggml_tensor * root);
+
 struct mercan_ggml_graph_userdata_v1 {
     ggml_context * ctx = nullptr;
     void * attention_userdata = nullptr;
     mercan_ggml_self_attention_callback_v1 self_attention = nullptr;
+    void * output_userdata = nullptr;
+    mercan_ggml_set_output_callback_v1 set_output = nullptr;
+    mercan_ggml_finalize_callback_v1 finalize = nullptr;
 };
 
 static inline ggml_tensor * mercan_ggml_tensor_from_handle_v1(mercan_tensor_handle_v1 handle) {
@@ -427,6 +434,25 @@ static inline mercan_tensor_handle_v1 mercan_ggml_self_attention_v1(
     return result ? mercan_ggml_tensor_to_handle_v1(result) : MERCAN_TENSOR_NONE_V1;
 }
 
+static inline int mercan_ggml_set_output_v1(
+        mercan_graph_builder_v1 * builder,
+        mercan_graph_output_kind_v1 kind,
+        mercan_tensor_handle_v1 tensor) {
+    auto * ud = mercan_ggml_userdata_v1(builder);
+    if (!ud || !ud->set_output) return -1;
+    ggml_tensor * t = mercan_ggml_tensor_from_handle_v1(tensor);
+    return t ? ud->set_output(ud->output_userdata, kind, t) : -1;
+}
+
+static inline int mercan_ggml_finalize_v1(
+        mercan_graph_builder_v1 * builder,
+        mercan_tensor_handle_v1 root) {
+    auto * ud = mercan_ggml_userdata_v1(builder);
+    if (!ud || !ud->finalize) return -1;
+    ggml_tensor * t = mercan_ggml_tensor_from_handle_v1(root);
+    return t ? ud->finalize(ud->output_userdata, t) : -1;
+}
+
 static const mercan_graph_api_v1 MERCAN_GGML_GRAPH_API_V1 = {
     MERCAN_GRAPH_ABI_VERSION,
     sizeof(mercan_graph_api_v1),
@@ -443,6 +469,8 @@ static const mercan_graph_api_v1 MERCAN_GGML_GRAPH_API_V1 = {
     mercan_ggml_rms_norm_v1,
     mercan_ggml_rope_ext_v1,
     mercan_ggml_self_attention_v1,
+    mercan_ggml_set_output_v1,
+    mercan_ggml_finalize_v1,
 };
 
 static inline mercan_graph_builder_v1 mercan_make_ggml_graph_builder_v1(

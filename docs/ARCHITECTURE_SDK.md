@@ -174,3 +174,8 @@ Plugins must probe the capability with `MERCAN_GRAPH_API_HAS_V1(api, self_attent
 `mercan_kv.h` exposes opaque cache handles for the runtime-owned base and sliding-window cache views. Plugins can query the current batch's K/V placement indices and attention mask as opaque Tensor ABI handles without importing llama.cpp memory/cache classes. A window size of `0` means the runtime/full-context policy; the sliding-window handle reports its concrete window length.
 
 Cache allocation, lifetime and mutation are deliberately runtime-owned in v1. Architectures that need custom write semantics can be supported by append-only KV ABI extensions without changing existing plugins.
+
+
+## Graph output and finalization
+
+Graph ABI v1 now provides append-only `set_output` and `finalize` capabilities. Architecture code publishes embedding/logit/hidden outputs through stable output kinds and finalizes the graph root without touching llama.cpp `llm_graph_result` or `ggml_cgraph` internals. Plugins must capability-probe both callbacks before use.

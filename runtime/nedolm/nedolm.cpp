@@ -147,10 +147,35 @@ llama_model_nedolm::graph::graph(const llama_model & model, const llm_graph_para
     GGML_ASSERT(mercan_graph_builder_valid_v1(&mercan_graph));
     GGML_ASSERT(MERCAN_GRAPH_BUILDER_HAS_V1(&mercan_graph, tensors));
     GGML_ASSERT(mercan_graph.tensors == &mercan_tensors);
+    struct nedolm_output_bridge_v1 {
+        llm_graph_result * result;
+        ggml_cgraph * graph;
+    };
+    nedolm_output_bridge_v1 output_bridge{res, gf};
+    mercan_graph_userdata.output_userdata = &output_bridge;
+    mercan_graph_userdata.set_output = [](void * opaque, mercan_graph_output_kind_v1 kind, ggml_tensor * tensor) -> int {
+        auto * bridge = static_cast<nedolm_output_bridge_v1 *>(opaque);
+        if (!bridge || !bridge->result || !tensor) return -1;
+        switch (kind) {
+            case MERCAN_GRAPH_OUTPUT_EMBEDDING_V1: bridge->result->t_embd = tensor; return 0;
+            case MERCAN_GRAPH_OUTPUT_LOGITS_V1: bridge->result->t_logits = tensor; return 0;
+            case MERCAN_GRAPH_OUTPUT_HIDDEN_V1: bridge->result->t_h_nextn = tensor; return 0;
+            default: return -1;
+        }
+    };
+    mercan_graph_userdata.finalize = [](void * opaque, ggml_tensor * root) -> int {
+        auto * bridge = static_cast<nedolm_output_bridge_v1 *>(opaque);
+        if (!bridge || !bridge->graph || !root) return -1;
+        ggml_build_forward_expand(bridge->graph, root);
+        return 0;
+    };
+
     const mercan_graph_api_v1 & mg = *mercan_graph.api;
     GGML_ASSERT(MERCAN_GRAPH_API_HAS_V1(&mg, rms_norm));
     GGML_ASSERT(MERCAN_GRAPH_API_HAS_V1(&mg, rope_ext));
     GGML_ASSERT(MERCAN_GRAPH_API_HAS_V1(&mg, self_attention));
+    GGML_ASSERT(MERCAN_GRAPH_API_HAS_V1(&mg, set_output));
+    GGML_ASSERT(MERCAN_GRAPH_API_HAS_V1(&mg, finalize));
 
     const mercan_rope_mode_v1 mercan_rope_mode = mercan_ggml_rope_mode_to_mercan_v1(rope_type);
     GGML_ASSERT(mercan_rope_mode != MERCAN_ROPE_MODE_UNSUPPORTED_V1);
@@ -346,9 +371,11 @@ llama_model_nedolm::graph::graph(const llama_model & model, const llm_graph_para
 
     ggml_tensor * cur = graph_rms_norm_weight(inpL, require_tensor("output_norm.weight"), -1);
     cb(cur, "result_norm", -1);
-    res->t_embd = cur;
+    GGML_ASSERT(mg.set_output(&mercan_graph, MERCAN_GRAPH_OUTPUT_EMBEDDING_V1,
+        mercan_ggml_tensor_to_handle_v1(cur)) == 0);
     cur = build_lora_mm(require_tensor("output.weight"), cur, model.output_s);
     cb(cur, "result_output", -1);
-    res->t_logits = cur;
-    ggml_build_forward_expand(gf, cur);
+    GGML_ASSERT(mg.set_output(&mercan_graph, MERCAN_GRAPH_OUTPUT_LOGITS_V1,
+        mercan_ggml_tensor_to_handle_v1(cur)) == 0);
+    GGML_ASSERT(mg.finalize(&mercan_graph, mercan_ggml_tensor_to_handle_v1(cur)) == 0);
 }

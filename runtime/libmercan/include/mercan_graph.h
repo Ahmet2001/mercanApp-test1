@@ -2,6 +2,7 @@
 #define MERCAN_GRAPH_H
 
 #include "mercan_tensor.h"
+#include "mercan_kv.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -102,6 +103,9 @@ struct mercan_graph_builder_v1 {
 
     /* Append-only v1 extension. Runtime-owned tensor resolver for model weights/state. */
     mercan_tensor_resolver_v1 * tensors;
+
+    /* Append-only v1 extension. Opaque runtime-owned KV cache view. */
+    mercan_kv_resolver_v1 * kv;
 };
 
 #define MERCAN_GRAPH_BUILDER_V1_BASE_SIZE \

@@ -35,6 +35,8 @@ enum mercan_arch_flags_v1 {
     MERCAN_ARCH_GRAPH_ABI_V1_PRIMITIVES = 1ull << 2,
     /* Architecture resolves model weights through Mercan Tensor ABI v1. */
     MERCAN_ARCH_TENSOR_ABI_V1 = 1ull << 3,
+    /* Architecture consumes the opaque runtime-owned KV cache view ABI v1. */
+    MERCAN_ARCH_KV_ABI_V1 = 1ull << 4,
 };
 
 typedef struct mercan_architecture_v1 {

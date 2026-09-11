@@ -114,7 +114,7 @@ A provider never receives a `ggml_tensor *`. The current ggml adapter converts o
 
 ### Current experimental scope
 
-Graph ABI v1 is intentionally incremental. NedoLM's MorphFFN-specific primitive sequence runs through this ABI, and the real NedoLM path now also uses Graph ABI for RMSNorm+weight application, Q/K RoPE, final-token row selection and residual adds. Attention construction, KV-cache management, LoRA-aware matrix multiplication, and backend model/tensor ownership are still backend-managed.
+Graph ABI v1 is intentionally incremental. NedoLM's MorphFFN-specific primitive sequence runs through this ABI, and the real NedoLM path now also uses Graph ABI for RMSNorm+weight application, Q/K RoPE, final-token row selection and residual adds. Cached self-attention now runs through Graph ABI v1, and KV cache batch views are available through KV Cache ABI v1. Cache mutation/lifetime, LoRA-aware matrix multiplication, and backend model ownership remain runtime-managed.
 
 This gives Mercan a real regression target for the abstraction before the API is opened to fully external graph plugins.
 
@@ -167,3 +167,10 @@ Before declaring external `.so`/`.dylib` graph plugins stable, Mercan will move 
 Graph ABI v1 exposes `self_attention` as an append-only capability. Architecture plugins pass opaque Q/K/V tensor handles plus the output projection weight; the runtime owns attention masks, sliding-window selection, and the concrete KV-cache implementation. This keeps llama.cpp cache/input classes out of the public SDK.
 
 Plugins must probe the capability with `MERCAN_GRAPH_API_HAS_V1(api, self_attention)` before use. An explicit lower-level KV-cache ABI remains a separate future extension for architectures that need custom cache semantics.
+
+
+## KV Cache ABI v1
+
+`mercan_kv.h` exposes opaque cache handles for the runtime-owned base and sliding-window cache views. Plugins can query the current batch's K/V placement indices and attention mask as opaque Tensor ABI handles without importing llama.cpp memory/cache classes. A window size of `0` means the runtime/full-context policy; the sliding-window handle reports its concrete window length.
+
+Cache allocation, lifetime and mutation are deliberately runtime-owned in v1. Architectures that need custom write semantics can be supported by append-only KV ABI extensions without changing existing plugins.

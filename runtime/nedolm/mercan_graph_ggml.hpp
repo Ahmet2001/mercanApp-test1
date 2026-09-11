@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mercan_graph.h"
+#include "mercan_kv.h"
 #include "ggml.h"
 
 #include <algorithm>
@@ -9,6 +10,8 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+class llm_graph_input_attn_kv_iswa;
 
 struct mercan_ggml_tensor_decl_v1 {
     std::string name;
@@ -155,6 +158,100 @@ static inline mercan_tensor_resolver_v1 mercan_make_ggml_tensor_resolver_v1(
     out.struct_size = sizeof(mercan_tensor_resolver_v1);
     out.userdata = catalog;
     out.api = &MERCAN_GGML_TENSOR_API_V1;
+    return out;
+}
+
+
+struct mercan_ggml_kv_view_v1 {
+    llm_graph_input_attn_kv_iswa * input = nullptr;
+    int64_t sliding_window = 0;
+    std::string last_error;
+};
+
+static inline mercan_ggml_kv_view_v1 * mercan_ggml_kv_view_from_resolver_v1(mercan_kv_resolver_v1 * resolver) {
+    return resolver ? static_cast<mercan_ggml_kv_view_v1 *>(resolver->userdata) : nullptr;
+}
+
+static inline mercan_kv_cache_handle_v1 mercan_ggml_kv_cache_by_kind_v1(
+        mercan_kv_resolver_v1 * resolver, mercan_kv_cache_kind_v1 kind) {
+    auto * view = mercan_ggml_kv_view_from_resolver_v1(resolver);
+    if (!view || !view->input) return MERCAN_KV_CACHE_NONE_V1;
+    switch (kind) {
+        case MERCAN_KV_CACHE_KIND_BASE_V1: return 1;
+        case MERCAN_KV_CACHE_KIND_SLIDING_WINDOW_V1:
+            return view->sliding_window > 0 ? 2 : MERCAN_KV_CACHE_NONE_V1;
+        default:
+            view->last_error = "unsupported KV cache kind";
+            return MERCAN_KV_CACHE_NONE_V1;
+    }
+}
+
+static inline mercan_kv_cache_kind_v1 mercan_ggml_kv_kind_v1(
+        mercan_kv_resolver_v1 *, mercan_kv_cache_handle_v1 cache) {
+    if (cache == 1) return MERCAN_KV_CACHE_KIND_BASE_V1;
+    if (cache == 2) return MERCAN_KV_CACHE_KIND_SLIDING_WINDOW_V1;
+    return MERCAN_KV_CACHE_KIND_UNKNOWN_V1;
+}
+
+static inline int64_t mercan_ggml_kv_window_size_v1(
+        mercan_kv_resolver_v1 * resolver, mercan_kv_cache_handle_v1 cache) {
+    auto * view = mercan_ggml_kv_view_from_resolver_v1(resolver);
+    if (!view || !view->input) return -1;
+    if (cache == 1) return 0; /* 0 = runtime/full-context policy */
+    if (cache == 2) return view->sliding_window;
+    return -1;
+}
+
+static inline mercan_tensor_handle_v1 mercan_ggml_kv_k_indices_v1(
+        mercan_kv_resolver_v1 * resolver, mercan_kv_cache_handle_v1 cache) {
+    auto * view = mercan_ggml_kv_view_from_resolver_v1(resolver);
+    if (!view || !view->input) return MERCAN_TENSOR_NONE_V1;
+    ggml_tensor * t = cache == 1 ? view->input->get_k_idxs() :
+                      cache == 2 ? view->input->get_k_idxs_swa() : nullptr;
+    return mercan_ggml_tensor_to_handle_v1(t);
+}
+
+static inline mercan_tensor_handle_v1 mercan_ggml_kv_v_indices_v1(
+        mercan_kv_resolver_v1 * resolver, mercan_kv_cache_handle_v1 cache) {
+    auto * view = mercan_ggml_kv_view_from_resolver_v1(resolver);
+    if (!view || !view->input) return MERCAN_TENSOR_NONE_V1;
+    ggml_tensor * t = cache == 1 ? view->input->get_v_idxs() :
+                      cache == 2 ? view->input->get_v_idxs_swa() : nullptr;
+    return mercan_ggml_tensor_to_handle_v1(t);
+}
+
+static inline mercan_tensor_handle_v1 mercan_ggml_kv_attention_mask_v1(
+        mercan_kv_resolver_v1 * resolver, mercan_kv_cache_handle_v1 cache) {
+    auto * view = mercan_ggml_kv_view_from_resolver_v1(resolver);
+    if (!view || !view->input) return MERCAN_TENSOR_NONE_V1;
+    ggml_tensor * t = cache == 1 ? view->input->get_kq_mask() :
+                      cache == 2 ? view->input->get_kq_mask_swa() : nullptr;
+    return mercan_ggml_tensor_to_handle_v1(t);
+}
+
+static inline const char * mercan_ggml_kv_last_error_v1(mercan_kv_resolver_v1 * resolver) {
+    auto * view = mercan_ggml_kv_view_from_resolver_v1(resolver);
+    return view ? view->last_error.c_str() : "invalid KV resolver";
+}
+
+static const mercan_kv_api_v1 MERCAN_GGML_KV_API_V1 = {
+    MERCAN_KV_ABI_VERSION,
+    sizeof(mercan_kv_api_v1),
+    mercan_ggml_kv_cache_by_kind_v1,
+    mercan_ggml_kv_kind_v1,
+    mercan_ggml_kv_window_size_v1,
+    mercan_ggml_kv_k_indices_v1,
+    mercan_ggml_kv_v_indices_v1,
+    mercan_ggml_kv_attention_mask_v1,
+    mercan_ggml_kv_last_error_v1,
+};
+
+static inline mercan_kv_resolver_v1 mercan_make_ggml_kv_resolver_v1(mercan_ggml_kv_view_v1 * view) {
+    mercan_kv_resolver_v1 out{};
+    out.abi_version = MERCAN_KV_ABI_VERSION;
+    out.struct_size = sizeof(mercan_kv_resolver_v1);
+    out.userdata = view;
+    out.api = &MERCAN_GGML_KV_API_V1;
     return out;
 }
 
@@ -357,5 +454,6 @@ static inline mercan_graph_builder_v1 mercan_make_ggml_graph_builder_v1(
     out.userdata = userdata;
     out.api = &MERCAN_GGML_GRAPH_API_V1;
     out.tensors = tensors;
+    out.kv = nullptr;
     return out;
 }

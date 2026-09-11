@@ -179,6 +179,25 @@ llama_model_nedolm::graph::graph(const llama_model & model, const llm_graph_para
     ggml_tensor * inp_pos = build_inp_pos();
     auto * inp_attn = build_attn_inp_kv_iswa();
 
+    mercan_ggml_kv_view_v1 mercan_kv_view{inp_attn, static_cast<int64_t>(hparams.n_swa), {}};
+    mercan_kv_resolver_v1 mercan_kv = mercan_make_ggml_kv_resolver_v1(&mercan_kv_view);
+    GGML_ASSERT(mercan_kv_resolver_valid_v1(&mercan_kv));
+    mercan_graph.kv = &mercan_kv;
+    GGML_ASSERT(MERCAN_GRAPH_BUILDER_HAS_V1(&mercan_graph, kv));
+    GGML_ASSERT(mercan_graph.kv == &mercan_kv);
+    const mercan_kv_api_v1 & mkv = *mercan_kv.api;
+    const mercan_kv_cache_handle_v1 base_cache = mkv.cache_by_kind(&mercan_kv, MERCAN_KV_CACHE_KIND_BASE_V1);
+    const mercan_kv_cache_handle_v1 swa_cache = mkv.cache_by_kind(&mercan_kv, MERCAN_KV_CACHE_KIND_SLIDING_WINDOW_V1);
+    GGML_ASSERT(base_cache != MERCAN_KV_CACHE_NONE_V1);
+    GGML_ASSERT(swa_cache != MERCAN_KV_CACHE_NONE_V1);
+    GGML_ASSERT(mkv.window_size(&mercan_kv, swa_cache) == static_cast<int64_t>(hparams.n_swa));
+    GGML_ASSERT(mkv.k_indices(&mercan_kv, base_cache) != MERCAN_TENSOR_NONE_V1);
+    GGML_ASSERT(mkv.v_indices(&mercan_kv, base_cache) != MERCAN_TENSOR_NONE_V1);
+    GGML_ASSERT(mkv.attention_mask(&mercan_kv, base_cache) != MERCAN_TENSOR_NONE_V1);
+    GGML_ASSERT(mkv.k_indices(&mercan_kv, swa_cache) != MERCAN_TENSOR_NONE_V1);
+    GGML_ASSERT(mkv.v_indices(&mercan_kv, swa_cache) != MERCAN_TENSOR_NONE_V1);
+    GGML_ASSERT(mkv.attention_mask(&mercan_kv, swa_cache) != MERCAN_TENSOR_NONE_V1);
+
     struct nedolm_attention_bridge_v1 {
         llama_model_nedolm::graph * graph;
         llm_graph_input_attn_kv_iswa * input;

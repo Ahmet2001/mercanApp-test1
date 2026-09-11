@@ -1,6 +1,7 @@
 #include "mercan.h"
 #include "mercan_arch.h"
 #include "mercan_graph.h"
+#include "mercan_kv.h"
 #include "mercan_tensor.h"
 #include "mercan_tokenizer.h"
 
@@ -253,6 +254,7 @@ static void print_help() {
         << "  mercan tokenizer list\n"
         << "  mercan graph abi\n"
         << "  mercan tensor abi\n"
+        << "  mercan kv abi\n"
         << "  mercan --version\n\n"
         << "Run options:\n"
         << "  -p, --prompt TEXT       single-shot prompt (otherwise interactive)\n"
@@ -345,6 +347,7 @@ static int command_arch(int argc, char ** argv) {
         if (arch->default_tokenizer && *arch->default_tokenizer) std::cout << "\ttokenizer=" << arch->default_tokenizer;
         if (arch->flags & MERCAN_ARCH_GRAPH_ABI_V1_PRIMITIVES) std::cout << "\tgraph-abi-v1";
         if (arch->flags & MERCAN_ARCH_TENSOR_ABI_V1) std::cout << "\ttensor-abi-v1";
+        if (arch->flags & MERCAN_ARCH_KV_ABI_V1) std::cout << "\tkv-abi-v1";
         if (arch->flags & MERCAN_ARCH_BUILTIN) std::cout << "\tbuiltin";
         std::cout << "\n";
     }
@@ -360,6 +363,19 @@ static int command_graph(int argc, char ** argv) {
               << "primitives=get_rows,cast_f32,swiglu_split,view_2d,mul,add,concat,matmul,rms_norm,rope_ext,self_attention\n"
               << "attention=runtime-owned-mask-and-cache\n"
               << "tensor_resolver=tensor-abi-v1\n";
+    return 0;
+}
+
+
+static int command_kv(int argc, char ** argv) {
+    if (argc != 3 || std::string(argv[2]) != "abi") {
+        die("usage: mercan kv abi");
+    }
+    std::cout << "Mercan KV Cache ABI " << MERCAN_KV_ABI_VERSION << "\n"
+              << "handles=opaque\n"
+              << "views=base,sliding-window\n"
+              << "batch_tensors=k_indices,v_indices,attention_mask\n"
+              << "mutation=runtime-owned\n";
     return 0;
 }
 
@@ -409,6 +425,7 @@ int main(int argc, char ** argv) {
     if (cmd == "tokenizer") return command_tokenizer(argc, argv);
     if (cmd == "graph") return command_graph(argc, argv);
     if (cmd == "tensor") return command_tensor(argc, argv);
+    if (cmd == "kv") return command_kv(argc, argv);
     if (cmd == "pull") {
         if (argc < 3) die("missing Hugging Face repository");
         const auto p = pull_hf(parse_hf_spec(argv[2]), argc > 3 && std::string(argv[3]) == "--force");

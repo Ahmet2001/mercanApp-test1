@@ -69,6 +69,10 @@ if(MERCAN_BUILD_SDK_TESTS)
     add_executable(mercan-graph-attention-abi-test tests/graph_attention_abi_compile.cpp)
     target_include_directories(mercan-graph-attention-abi-test PRIVATE runtime/libmercan/include)
     add_test(NAME mercan-graph-attention-abi-v1 COMMAND mercan-graph-attention-abi-test)
+
+    add_executable(mercan-kv-abi-test tests/kv_abi_compile.cpp)
+    target_include_directories(mercan-kv-abi-test PRIVATE runtime/libmercan/include)
+    add_test(NAME mercan-kv-abi-v1 COMMAND mercan-kv-abi-test)
 endif()
 
 include(GNUInstallDirs)
@@ -82,4 +86,5 @@ install(FILES
     runtime/libmercan/include/mercan_tokenizer.h
     runtime/libmercan/include/mercan_tensor.h
     runtime/libmercan/include/mercan_graph.h
+    runtime/libmercan/include/mercan_kv.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

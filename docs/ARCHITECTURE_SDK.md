@@ -194,3 +194,18 @@ mercan run model.mercan --plugin ./libmercan_arch_anka.so
 ```
 
 `examples/plugins/anka` is a real separately-built `.so` registration test. It proves discovery and ABI-safe registration. It intentionally does not claim an inference backend yet; executable third-party graph dispatch is the next SDK boundary.
+
+### External graph callback ABI v1
+
+An architecture descriptor may append `build_graph` and advertise
+`MERCAN_ARCH_GRAPH_CALLBACK_V1`. The runtime/backend adapter supplies a
+`mercan_arch_graph_invocation_v1` containing opaque token/position/output handles and a
+`mercan_graph_builder_v1`. Plugins resolve weights through `builder->tensors` and build
+ops through `builder->api`; no `ggml_tensor *`, llama model class, or cache implementation
+is exposed. `mercan_arch_build_graph_v1()` validates the ABI boundary before dispatch.
+
+The external Anka example now builds a minimal embedding -> output projection graph and
+is executed by the permanent plugin-loader test. This establishes executable external
+graph dispatch. Full arbitrary-model inference still requires the generic Mercan model
+loader/backend adapter to create model tensors and graph inputs without llama.cpp's
+compiled architecture factory.

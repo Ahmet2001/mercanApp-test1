@@ -376,6 +376,7 @@ static int command_arch(int argc, char ** argv) {
         if (arch->flags & MERCAN_ARCH_GRAPH_ABI_V1_PRIMITIVES) std::cout << "\tgraph-abi-v1";
         if (arch->flags & MERCAN_ARCH_TENSOR_ABI_V1) std::cout << "\ttensor-abi-v1";
         if (arch->flags & MERCAN_ARCH_KV_ABI_V1) std::cout << "\tkv-abi-v1";
+        if (arch->flags & MERCAN_ARCH_GRAPH_CALLBACK_V1) std::cout << "\tgraph-callback-v1";
         if (arch->flags & MERCAN_ARCH_BUILTIN) std::cout << "\tbuiltin";
         std::cout << "\n";
     }

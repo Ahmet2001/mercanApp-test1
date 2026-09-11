@@ -2,6 +2,7 @@
 #define MERCAN_ARCH_H
 
 #include "mercan.h"
+#include "mercan_graph.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -37,7 +38,32 @@ enum mercan_arch_flags_v1 {
     MERCAN_ARCH_TENSOR_ABI_V1 = 1ull << 3,
     /* Architecture consumes the opaque runtime-owned KV cache view ABI v1. */
     MERCAN_ARCH_KV_ABI_V1 = 1ull << 4,
+    /* Architecture provides an executable Graph ABI v1 build callback. */
+    MERCAN_ARCH_GRAPH_CALLBACK_V1 = 1ull << 5,
 };
+
+#define MERCAN_ARCH_GRAPH_INVOCATION_ABI_VERSION 1u
+
+/*
+ * Stable per-build inputs supplied by the runtime/backend adapter. The plugin
+ * owns no pointers here and must not retain them after build_graph returns.
+ */
+typedef struct mercan_arch_graph_invocation_v1 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    const mercan_metadata_v1 * metadata;
+    mercan_graph_builder_v1 * builder;
+
+    /* Runtime-created graph inputs. Token ids are the only mandatory v1 input. */
+    mercan_tensor_handle_v1 input_tokens;
+    mercan_tensor_handle_v1 input_positions;
+    mercan_tensor_handle_v1 output_ids;
+    uint32_t n_tokens;
+    uint32_t n_outputs;
+} mercan_arch_graph_invocation_v1;
+
+#define MERCAN_ARCH_GRAPH_INVOCATION_V1_BASE_SIZE \
+    (offsetof(mercan_arch_graph_invocation_v1, input_tokens) + sizeof(((mercan_arch_graph_invocation_v1 *) 0)->input_tokens))
 
 typedef struct mercan_architecture_v1 {
     uint32_t abi_version;
@@ -52,6 +78,14 @@ typedef struct mercan_architecture_v1 {
 
     /* Return 0 when valid. On error, optionally write a human-readable message. */
     int (*validate)(const mercan_metadata_v1 * metadata, char * error, size_t error_capacity);
+
+    /*
+     * Append-only v1 execution callback. Build the architecture graph using only
+     * stable handles/APIs exposed through invocation->builder.
+     */
+    int (*build_graph)(const mercan_arch_graph_invocation_v1 * invocation,
+                       char * error,
+                       size_t error_capacity);
 } mercan_architecture_v1;
 
 /* Minimum v1 descriptor prefix: identity/defaults/flags. Callbacks are optional. */
@@ -65,6 +99,12 @@ MERCAN_API int mercan_arch_register_v1(const mercan_architecture_v1 * architectu
 MERCAN_API const mercan_architecture_v1 * mercan_arch_find_v1(const char * name);
 MERCAN_API size_t mercan_arch_count_v1(void);
 MERCAN_API const mercan_architecture_v1 * mercan_arch_at_v1(size_t index);
+
+/* Validate and invoke an architecture's external/builtin graph callback. */
+MERCAN_API int mercan_arch_build_graph_v1(const mercan_architecture_v1 * architecture,
+                                          const mercan_arch_graph_invocation_v1 * invocation,
+                                          char * error,
+                                          size_t error_capacity);
 
 #ifdef __cplusplus
 }

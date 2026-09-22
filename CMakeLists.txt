@@ -7,6 +7,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 set(MERCAN_LLAMA_DIR "${CMAKE_SOURCE_DIR}/build/_deps/llama-src" CACHE PATH "Path to patched llama.cpp source")
 option(MERCAN_BUILD_SHARED "Build libmercan as a shared library" OFF)
+option(MERCAN_BUILD_CLI "Build the Mercan command-line executable" ON)
 option(MERCAN_BUILD_SDK_TESTS "Build Mercan SDK ABI regression tests" OFF)
 
 if(NOT EXISTS "${MERCAN_LLAMA_DIR}/CMakeLists.txt")
@@ -52,10 +53,12 @@ target_include_directories(libmercan
         "${MERCAN_LLAMA_DIR}/ggml/include")
 target_link_libraries(libmercan PUBLIC llama ${CMAKE_DL_LIBS})
 
-add_executable(mercan cli/main.cpp)
-target_link_libraries(mercan PRIVATE libmercan)
-if(GGML_CUDA)
-    target_compile_definitions(mercan PRIVATE MERCAN_CUDA_BUILD=1)
+if(MERCAN_BUILD_CLI)
+    add_executable(mercan cli/main.cpp)
+    target_link_libraries(mercan PRIVATE libmercan)
+    if(GGML_CUDA)
+        target_compile_definitions(mercan PRIVATE MERCAN_CUDA_BUILD=1)
+    endif()
 endif()
 
 if(MERCAN_BUILD_SDK_TESTS)
@@ -98,8 +101,12 @@ if(MERCAN_BUILD_SDK_TESTS)
 endif()
 
 include(GNUInstallDirs)
-install(TARGETS mercan libmercan
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+if(MERCAN_BUILD_CLI)
+    install(TARGETS mercan
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        BUNDLE DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+install(TARGETS libmercan
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(FILES

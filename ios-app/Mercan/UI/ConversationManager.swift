@@ -29,8 +29,10 @@ struct ConversationSummary: Identifiable {
 class ConversationManager: ObservableObject {
     @Published var conversations: [ConversationSummary] = []
     @Published var currentConversationId: UUID?
+    @Published private(set) var pinnedConversationIds: Set<UUID> = []
 
     private let fileManager = FileManager.default
+    private let pinnedKey = "mercan.pinnedConversationIds"
 
     private var conversationsDirectory: URL {
         let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -38,6 +40,8 @@ class ConversationManager: ObservableObject {
     }
 
     init() {
+        let rawPinned = UserDefaults.standard.stringArray(forKey: pinnedKey) ?? []
+        pinnedConversationIds = Set(rawPinned.compactMap(UUID.init(uuidString:)))
         createConversationsDirectoryIfNeeded()
         loadConversations()
     }
@@ -70,8 +74,7 @@ class ConversationManager: ObservableObject {
             }
         }
 
-        // Sort by most recently updated
-        conversations = loaded.sorted { $0.updatedAt > $1.updatedAt }
+        conversations = sortedSummaries(loaded)
     }
 
     func save(_ conversation: Conversation) {
@@ -99,14 +102,50 @@ class ConversationManager: ObservableObject {
             conversations.insert(summary, at: 0)
         }
 
-        // Re-sort by most recent
-        conversations.sort { $0.updatedAt > $1.updatedAt }
+        conversations = sortedSummaries(conversations)
+    }
+
+    func isPinned(_ conversationId: UUID) -> Bool {
+        pinnedConversationIds.contains(conversationId)
+    }
+
+    func togglePin(_ conversationId: UUID) {
+        if pinnedConversationIds.contains(conversationId) {
+            pinnedConversationIds.remove(conversationId)
+        } else {
+            pinnedConversationIds.insert(conversationId)
+        }
+        persistPins()
+        conversations = sortedSummaries(conversations)
+    }
+
+    func filteredConversations(searchText: String) -> [ConversationSummary] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return sortedSummaries(conversations) }
+        return sortedSummaries(conversations.filter {
+            $0.displayTitle.localizedCaseInsensitiveContains(query)
+        })
+    }
+
+    private func sortedSummaries(_ values: [ConversationSummary]) -> [ConversationSummary] {
+        values.sorted { lhs, rhs in
+            let lp = pinnedConversationIds.contains(lhs.id)
+            let rp = pinnedConversationIds.contains(rhs.id)
+            if lp != rp { return lp && !rp }
+            return lhs.updatedAt > rhs.updatedAt
+        }
+    }
+
+    private func persistPins() {
+        UserDefaults.standard.set(pinnedConversationIds.map(\.uuidString), forKey: pinnedKey)
     }
 
     func delete(_ conversationId: UUID) {
         let fileURL = conversationsDirectory.appendingPathComponent("\(conversationId.uuidString).json")
         try? fileManager.removeItem(at: fileURL)
         conversations.removeAll { $0.id == conversationId }
+        pinnedConversationIds.remove(conversationId)
+        persistPins()
 
         if currentConversationId == conversationId {
             currentConversationId = nil

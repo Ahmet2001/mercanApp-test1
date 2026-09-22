@@ -1,6 +1,6 @@
 import Foundation
 
-enum GenerationPreset: String, CaseIterable, Identifiable {
+enum GenerationPreset: String, CaseIterable, Identifiable, Hashable {
     case precise
     case balanced
     case creative

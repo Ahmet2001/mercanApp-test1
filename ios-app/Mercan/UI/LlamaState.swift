@@ -323,6 +323,18 @@ class LlamaState: ObservableObject {
         didSet { UserDefaults.standard.set(repeatPenalty, forKey: "repeatPenalty") }
     }
 
+    @Published var contextTokenCount: Int = 0
+    @Published var lastPromptTokenCount: Int = 0
+    @Published var generatedTokenCount: Int = 0
+    @Published var lastGenerationDuration: TimeInterval = 0
+    @Published var lastGenerationTokensPerSecond: Double = 0
+    @Published var attachedDocument: AttachedDocument?
+    @Published var documentImportError: String?
+    @Published var benchmarkResult: BenchmarkResult?
+    @Published var isBenchmarking = false
+
+    private var generationStartedAt: Date?
+
     private var samplingConfiguration: SamplingConfiguration {
         SamplingConfiguration(
             temperature: Float(temperature),
@@ -941,6 +953,19 @@ class LlamaState: ObservableObject {
         """
     }
 
+    private static func documentSystemMessage(_ document: AttachedDocument) -> String {
+        let maxChars = 100_000
+        let body = document.text.count > maxChars
+            ? String(document.text.prefix(maxChars)) + "\n…[truncated]"
+            : document.text
+        return """
+        The user attached a document named "\(document.name)". Use it as grounding context when relevant. If the user asks about the document and the answer is not present, say that clearly.
+
+        Document:
+        \(body)
+        """
+    }
+
     func resolvedTranscriptText() -> String? {
         if let conversationTranscript, !conversationTranscript.isEmpty {
             return conversationTranscript
@@ -994,6 +1019,11 @@ class LlamaState: ObservableObject {
         chatMessages.append((role: "system", content: Self.transcriptSystemMessage(transcript)))
     }
 
+    private func appendDocumentContext(to chatMessages: inout [(role: String, content: String)]) {
+        guard let attachedDocument else { return }
+        chatMessages.append((role: "system", content: Self.documentSystemMessage(attachedDocument)))
+    }
+
     private func saveTranscriptToDisk(conversationId: UUID, transcript: String) throws -> String {
         let dir = getDocumentsDirectory().appendingPathComponent("transcripts", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -1043,6 +1073,7 @@ class LlamaState: ObservableObject {
             chatMessages.append((role: "system", content: systemPrompt))
         }
         await appendTranscriptContext(to: &chatMessages)
+        appendDocumentContext(to: &chatMessages)
         for msg in messages {
             chatMessages.append((role: msg.isUser ? "user" : "assistant", content: msg.content))
         }
@@ -1149,6 +1180,8 @@ class LlamaState: ObservableObject {
         speechSynthesizer.stop()
         isGenerating = true
         isStopped = false
+        generationStartedAt = Date()
+        generatedTokenCount = 0
         rawResponse = ""
         rawResponseParts = []
         displayParts = []
@@ -1171,6 +1204,7 @@ class LlamaState: ObservableObject {
                 chatMessages.append((role: "system", content: systemPrompt))
             }
             await appendTranscriptContext(to: &chatMessages)
+            appendDocumentContext(to: &chatMessages)
             for msg in messages {
                 chatMessages.append((role: msg.isUser ? "user" : "assistant", content: msg.content))
             }
@@ -1178,6 +1212,8 @@ class LlamaState: ObservableObject {
             // Context overflow handling
             let budget = Int(Double(contextSize) * 0.95)
             var currentTokenCount = await inferenceEngine.countTokens(for: chatMessages)
+            lastPromptTokenCount = currentTokenCount
+            contextTokenCount = currentTokenCount
             var trimmed = false
             while currentTokenCount > budget && chatMessages.count > 1 {
                 // Remove oldest non-system message
@@ -1191,6 +1227,7 @@ class LlamaState: ObservableObject {
             if currentTokenCount > budget, chatMessages.count > 1, chatMessages.first?.role == "system" {
                 chatMessages.removeFirst()
             }
+            contextTokenCount = currentTokenCount
             if trimmed {
                 contextTruncated = true
                 print("Context truncated: \(chatMessages.count) messages remaining")
@@ -1225,6 +1262,7 @@ class LlamaState: ObservableObject {
                     token = try await inferenceEngine.streamToken()
                 } catch {
                     await MainActor.run {
+                        self.finalizeGenerationStats()
                         self.currentResponse = "Error: Inference failed (\(error.localizedDescription))"
                         let errorMessage = ChatMessage(content: self.currentResponse, isUser: false, timestamp: Date())
                         self.messages.append(errorMessage)
@@ -1236,6 +1274,7 @@ class LlamaState: ObservableObject {
                     return
                 }
                 if let token {
+                    generatedTokenCount += 1
                     rawResponseParts.append(token)
                     let filtered = tokenFilter.process(token)
                     if !filtered.isEmpty {
@@ -1305,6 +1344,7 @@ class LlamaState: ObservableObject {
             await MainActor.run {
                 self.isThinking = false
                 self.isGenerating = false
+                self.finalizeGenerationStats()
             }
 
             // Generate title after first exchange (user + assistant = 2 messages)
@@ -1316,6 +1356,7 @@ class LlamaState: ObservableObject {
             }
         } catch {
             await MainActor.run {
+                self.finalizeGenerationStats()
                 self.currentResponse = "Error: \(error.localizedDescription)"
                 let errorMessage = ChatMessage(content: self.currentResponse, isUser: false, timestamp: Date())
                 self.messages.append(errorMessage)
@@ -1335,6 +1376,10 @@ class LlamaState: ObservableObject {
         }
         messages = []
         currentResponse = ""
+        contextTokenCount = 0
+        lastPromptTokenCount = 0
+        attachedDocument = nil
+        documentImportError = nil
         setTranscriptContext(text: nil, jobId: nil)
         currentConversation = conversationManager?.createNew()
     }
@@ -1368,7 +1413,16 @@ class LlamaState: ObservableObject {
         }
         isThinking = false
         isGenerating = false
+        finalizeGenerationStats()
         saveCurrentConversation()
+    }
+
+    private func finalizeGenerationStats() {
+        guard let started = generationStartedAt else { return }
+        let duration = max(Date().timeIntervalSince(started), 0.001)
+        lastGenerationDuration = duration
+        lastGenerationTokensPerSecond = Double(generatedTokenCount) / duration
+        generationStartedAt = nil
     }
 
     func getTotalRAMInGiB() -> Double {
@@ -1386,6 +1440,119 @@ class LlamaState: ObservableObject {
         }
         let totalRAM = getTotalRAMInGiB()
         return totalRAM >= requiredRAM
+    }
+
+    var contextUsageFraction: Double {
+        guard contextSize > 0 else { return 0 }
+        return min(1, Double(contextTokenCount) / Double(contextSize))
+    }
+
+    func recommendedContextSize() -> UInt32 {
+        let ram = getTotalRAMInGiB()
+        if ram < 4 { return 2048 }
+        if ram < 6 { return 4096 }
+        if ram < 8 { return 8192 }
+        return 16384
+    }
+
+    func optimizeForDevice() {
+        contextSize = recommendedContextSize()
+        applyGenerationPreset(.balanced)
+    }
+
+    func applyGenerationPreset(_ preset: GenerationPreset) {
+        let config = preset.configuration
+        temperature = Double(config.temperature)
+        topK = Int(config.topK)
+        topP = Double(config.topP)
+        minP = Double(config.minP)
+        repeatPenalty = Double(config.repeatPenalty)
+    }
+
+    func attachDocument(_ document: AttachedDocument) {
+        attachedDocument = document
+        documentImportError = nil
+        contextTokenCount = 0
+    }
+
+    func clearAttachedDocument() {
+        attachedDocument = nil
+        contextTokenCount = 0
+    }
+
+    func localModelSize(filename: String) -> Int64 {
+        fileSize(at: getDocumentsDirectory().appendingPathComponent(filename))
+    }
+
+    func regenerateLastResponse() async {
+        guard !isGenerating,
+              let lastUserIndex = messages.lastIndex(where: { $0.isUser }) else { return }
+        let prompt = messages[lastUserIndex].content
+        messages = Array(messages.prefix(lastUserIndex))
+        saveCurrentConversation()
+        await complete(text: prompt)
+    }
+
+    func runBenchmark() async {
+        guard !isGenerating, !isBenchmarking else { return }
+        if inferenceEngine == nil {
+            guard await ensureModelLoaded() else { return }
+        }
+        guard let inferenceEngine else { return }
+
+        isBenchmarking = true
+        benchmarkResult = nil
+        let restoreMessages = await chatMessagesForInference()
+        let benchmarkMessages: [(role: String, content: String)] = [
+            (role: "system", content: "Answer concisely and directly."),
+            (role: "user", content: "Explain in three short sentences why running an AI model locally on a phone can be useful.")
+        ]
+
+        let benchmarkSampling = SamplingConfiguration(
+            temperature: 0,
+            topK: 1,
+            topP: 1,
+            minP: 0,
+            repeatPenalty: 1,
+            repeatLastN: 0
+        )
+
+        var count = 0
+        let started = Date()
+
+        do {
+            await inferenceEngine.setSampling(benchmarkSampling)
+            await inferenceEngine.resume()
+            try await inferenceEngine.generateNext(messages: benchmarkMessages)
+
+            while await !inferenceEngine.isComplete && count < 64 {
+                if try await inferenceEngine.streamToken() != nil {
+                    count += 1
+                }
+            }
+            await inferenceEngine.stop()
+
+            let duration = max(Date().timeIntervalSince(started), 0.001)
+            benchmarkResult = BenchmarkResult(
+                modelName: currentModelName.isEmpty ? "Mercan" : currentModelName,
+                generatedTokens: count,
+                duration: duration,
+                tokensPerSecond: Double(count) / duration,
+                date: Date()
+            )
+
+            await inferenceEngine.setSampling(samplingConfiguration)
+            if !restoreMessages.isEmpty {
+                try await inferenceEngine.encodePrompt(messages: restoreMessages)
+            } else {
+                await inferenceEngine.clear()
+            }
+        } catch {
+            modelLoadError = "Benchmark failed: \(error.localizedDescription)"
+            await inferenceEngine.setSampling(samplingConfiguration)
+        }
+
+        isBenchmarking = false
     }
 
     // MARK: - Title Generation

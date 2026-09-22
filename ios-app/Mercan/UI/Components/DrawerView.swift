@@ -248,7 +248,7 @@ struct SettingsView: View {
                 }
 
                 // MARK: - Generation Section
-                Section("Generation") {
+                Section {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             Label("Temperature", systemImage: "thermometer.medium")
@@ -287,6 +287,8 @@ struct SettingsView: View {
                         }
                         Slider(value: $llamaState.repeatPenalty, in: 1.0...1.5, step: 0.05)
                     }
+                } header: {
+                    Text("Generation")
                 } footer: {
                     Text("Temperature 0 uses greedy decoding. Higher values increase variation. Top P/Top K limit candidate tokens; repeat penalty reduces loops.")
                         .font(.caption)

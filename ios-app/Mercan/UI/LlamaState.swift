@@ -1447,6 +1447,19 @@ class LlamaState: ObservableObject {
         return min(1, Double(contextTokenCount) / Double(contextSize))
     }
 
+    var currentGenerationPreset: GenerationPreset {
+        let values: [(GenerationPreset, Double)] = GenerationPreset.allCases.map { preset in
+            let c = preset.configuration
+            let distance =
+                abs(Double(c.temperature) - temperature) +
+                abs(Double(c.topP) - topP) +
+                abs(Double(c.topK) - Double(topK)) / 100.0 +
+                abs(Double(c.repeatPenalty) - repeatPenalty)
+            return (preset, distance)
+        }
+        return values.min(by: { $0.1 < $1.1 })?.0 ?? .balanced
+    }
+
     func recommendedContextSize() -> UInt32 {
         let ram = getTotalRAMInGiB()
         if ram < 4 { return 2048 }

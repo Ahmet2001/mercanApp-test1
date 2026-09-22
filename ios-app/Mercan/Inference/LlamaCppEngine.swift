@@ -81,9 +81,8 @@ actor MercanRuntimeEngine: InferenceEngine {
         isComplete = true
     }
 
-    func modelInfo() async -> String {
-        guard let runtimeContext else { return "Mercan Runtime" }
-        return await runtimeContext.model_info()
+    func modelInfo() -> String {
+        "Mercan Runtime (libmercan)"
     }
 
     func clearGenerationState() async {

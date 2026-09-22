@@ -101,6 +101,8 @@ Mercan Graph ABI v1 adds a backend-independent tensor-operation boundary based o
 
 See `spec/MERCAN_FORMAT_V1.md`, `docs/ARCHITECTURE_SDK.md` and `docs/GRAPH_ABI_V1.md`.
 
+The iOS app experience is documented in [ios-app/FEATURES.md](ios-app/FEATURES.md).
+
 ## Build from source
 
 Required tools:

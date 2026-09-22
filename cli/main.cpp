@@ -142,53 +142,16 @@ static std::string token_piece(mercan_model * model, mercan_token token) {
     return {};
 }
 
-static mercan_token sample_token(const float * logits, int32_t n_vocab, float temperature, int top_k, float top_p, std::mt19937 & rng) {
-    if (!logits || n_vocab <= 0) die("no logits available");
-    if (temperature <= 0.0f) {
-        return static_cast<mercan_token>(std::max_element(logits, logits + n_vocab) - logits);
-    }
-
-    top_k = std::max(1, std::min(top_k, n_vocab));
-    std::vector<std::pair<float, int32_t>> ranked;
-    ranked.reserve(static_cast<size_t>(n_vocab));
-    for (int32_t i = 0; i < n_vocab; ++i) ranked.emplace_back(logits[i], i);
-    std::partial_sort(ranked.begin(), ranked.begin() + top_k, ranked.end(),
-        [](const auto & a, const auto & b) { return a.first > b.first; });
-    ranked.resize(static_cast<size_t>(top_k));
-
-    const float max_logit = ranked.front().first;
-    std::vector<double> weights;
-    weights.reserve(ranked.size());
-    double total = 0.0;
-    for (const auto & x : ranked) {
-        const double w = std::exp((static_cast<double>(x.first) - max_logit) / temperature);
-        weights.push_back(w);
-        total += w;
-    }
-
-    if (top_p > 0.0f && top_p < 1.0f && total > 0.0) {
-        double cumulative = 0.0;
-        size_t keep = 0;
-        for (; keep < weights.size(); ++keep) {
-            cumulative += weights[keep] / total;
-            if (cumulative >= top_p) { ++keep; break; }
-        }
-        keep = std::max<size_t>(1, std::min(keep, weights.size()));
-        ranked.resize(keep);
-        weights.resize(keep);
-    }
-
-    std::discrete_distribution<size_t> dist(weights.begin(), weights.end());
-    return static_cast<mercan_token>(ranked[dist(rng)].second);
-}
-
 struct run_options {
     std::string model;
     std::string prompt;
     int max_tokens = 256;
-    float temperature = 0.0f;
+    float temperature = 0.7f;
     int top_k = 40;
     float top_p = 0.95f;
+    float min_p = 0.05f;
+    float repeat_penalty = 1.10f;
+    int repeat_last_n = 64;
     int threads = 0;
     std::vector<std::string> plugins;
 #ifdef MERCAN_CUDA_BUILD
@@ -221,14 +184,23 @@ static std::string generate(mercan_model * model, const run_options & opt, const
         i += static_cast<size_t>(n);
     }
 
-    std::random_device rd;
-    std::mt19937 rng(rd());
     std::string text;
-    const int32_t n_vocab = mercan_vocab_size(model);
     const mercan_token eos = mercan_eos_token(model);
+    mercan_sampler_params sampler = mercan_sampler_default_params();
+    sampler.temperature = opt.temperature;
+    sampler.top_k = opt.top_k;
+    sampler.top_p = opt.top_p;
+    sampler.min_p = opt.min_p;
+    sampler.repeat_penalty = opt.repeat_penalty;
+    sampler.repeat_last_n = opt.repeat_last_n;
 
     for (int i = 0; i < opt.max_tokens; ++i) {
-        mercan_token next = sample_token(mercan_logits(ctx), n_vocab, opt.temperature, opt.top_k, opt.top_p, rng);
+        mercan_token next = mercan_sample_next(ctx, sampler);
+        if (next < 0) {
+            const std::string err = mercan_last_error();
+            mercan_context_free(ctx);
+            die("sampling failed: " + err);
+        }
         if (next == eos) break;
         const std::string piece = token_piece(model, next);
         text += piece;
@@ -263,9 +235,12 @@ static void print_help() {
         << "Run options:\n"
         << "  -p, --prompt TEXT       single-shot prompt (otherwise interactive)\n"
         << "  -n, --max-tokens N      maximum generated tokens (default 256)\n"
-        << "  --temperature F         sampling temperature (default 0; greedy)\n"
+        << "  --temperature F         sampling temperature (default 0.7; 0 = greedy)\n"
         << "  --top-k N               top-k sampling (default 40)\n"
         << "  --top-p F               nucleus cutoff (default 0.95)\n"
+        << "  --min-p F               minimum probability ratio (default 0.05)\n"
+        << "  --repeat-penalty F      repetition penalty (default 1.10)\n"
+        << "  --repeat-last-n N       repetition window (default 64)\n"
         << "  -t, --threads N         CPU threads\n"
         << "  --plugin PATH           load external architecture/tokenizer plugin\n"
         << "  --gpu-layers N          GPU layers (-1 = all; CUDA build defaults to -1)\n\n"
@@ -311,6 +286,9 @@ static int command_run(int argc, char ** argv) {
         else if (a == "--temperature") opt.temperature = std::stof(need(a.c_str()));
         else if (a == "--top-k") opt.top_k = std::stoi(need(a.c_str()));
         else if (a == "--top-p") opt.top_p = std::stof(need(a.c_str()));
+        else if (a == "--min-p") opt.min_p = std::stof(need(a.c_str()));
+        else if (a == "--repeat-penalty") opt.repeat_penalty = std::stof(need(a.c_str()));
+        else if (a == "--repeat-last-n") opt.repeat_last_n = std::stoi(need(a.c_str()));
         else if (a == "-t" || a == "--threads") opt.threads = std::stoi(need(a.c_str()));
         else if (a == "--plugin") opt.plugins.push_back(need(a.c_str()));
         else if (a == "--gpu-layers") opt.gpu_layers = std::stoi(need(a.c_str()));

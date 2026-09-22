@@ -953,15 +953,12 @@ class LlamaState: ObservableObject {
         """
     }
 
-    private static func documentSystemMessage(_ document: AttachedDocument) -> String {
-        let maxChars = 100_000
-        let body = document.text.count > maxChars
-            ? String(document.text.prefix(maxChars)) + "\n…[truncated]"
-            : document.text
+    private static func documentSystemMessage(_ document: AttachedDocument, query: String) -> String {
+        let body = DocumentContextService.groundingText(for: document, query: query)
         return """
-        The user attached a document named "\(document.name)". Use it as grounding context when relevant. If the user asks about the document and the answer is not present, say that clearly.
+        The user attached a document named "\(document.name)". Use the selected local excerpts below as grounding context when relevant. If the answer is not present, say that clearly.
 
-        Document:
+        Document excerpts:
         \(body)
         """
     }
@@ -1019,9 +1016,15 @@ class LlamaState: ObservableObject {
         chatMessages.append((role: "system", content: Self.transcriptSystemMessage(transcript)))
     }
 
-    private func appendDocumentContext(to chatMessages: inout [(role: String, content: String)]) {
+    private func appendDocumentContext(
+        to chatMessages: inout [(role: String, content: String)],
+        query: String
+    ) {
         guard let attachedDocument else { return }
-        chatMessages.append((role: "system", content: Self.documentSystemMessage(attachedDocument)))
+        chatMessages.append((
+            role: "system",
+            content: Self.documentSystemMessage(attachedDocument, query: query)
+        ))
     }
 
     private func saveTranscriptToDisk(conversationId: UUID, transcript: String) throws -> String {
@@ -1073,7 +1076,8 @@ class LlamaState: ObservableObject {
             chatMessages.append((role: "system", content: systemPrompt))
         }
         await appendTranscriptContext(to: &chatMessages)
-        appendDocumentContext(to: &chatMessages)
+        let latestQuery = messages.last(where: { $0.isUser })?.content ?? ""
+        appendDocumentContext(to: &chatMessages, query: latestQuery)
         for msg in messages {
             chatMessages.append((role: msg.isUser ? "user" : "assistant", content: msg.content))
         }
@@ -1204,7 +1208,7 @@ class LlamaState: ObservableObject {
                 chatMessages.append((role: "system", content: systemPrompt))
             }
             await appendTranscriptContext(to: &chatMessages)
-            appendDocumentContext(to: &chatMessages)
+            appendDocumentContext(to: &chatMessages, query: text)
             for msg in messages {
                 chatMessages.append((role: msg.isUser ? "user" : "assistant", content: msg.content))
             }

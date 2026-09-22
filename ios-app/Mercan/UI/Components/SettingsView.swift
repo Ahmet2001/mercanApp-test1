@@ -1,5 +1,10 @@
 import SwiftUI
 
+private struct SystemPromptPreset: Identifiable {
+    let id: String
+    let prompt: String
+}
+
 struct SettingsView: View {
     @ObservedObject var llamaState: LlamaState
     @Environment(\.dismiss) private var dismiss
@@ -7,12 +12,12 @@ struct SettingsView: View {
     @State private var showManageModels = false
     @State private var showSystemPromptEditor = false
 
-    private let promptPresets: [(String, String)] = [
-        ("Default", ""),
-        ("Concise", "Answer clearly and concisely. Prefer short, direct responses unless detail is requested."),
-        ("Coder", "Act as a careful software engineering assistant. Prefer correct, runnable solutions and explain important tradeoffs."),
-        ("Writer", "Act as a thoughtful writing assistant. Preserve the user's intent, improve clarity, and avoid unnecessary filler."),
-        ("Translator", "Translate faithfully while preserving tone, meaning, formatting, names, and technical terminology.")
+    private let promptPresets = [
+        SystemPromptPreset(id: "Default", prompt: ""),
+        SystemPromptPreset(id: "Concise", prompt: "Answer clearly and concisely. Prefer short, direct responses unless detail is requested."),
+        SystemPromptPreset(id: "Coder", prompt: "Act as a careful software engineering assistant. Prefer correct, runnable solutions and explain important tradeoffs."),
+        SystemPromptPreset(id: "Writer", prompt: "Act as a thoughtful writing assistant. Preserve the user's intent, improve clarity, and avoid unnecessary filler."),
+        SystemPromptPreset(id: "Translator", prompt: "Translate faithfully while preserving tone, meaning, formatting, names, and technical terminology.")
     ]
 
     var body: some View {
@@ -73,9 +78,9 @@ struct SettingsView: View {
                 Section("System prompt") {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack {
-                            ForEach(promptPresets, id: \.0) { preset in
-                                Button(preset.0) {
-                                    llamaState.systemPrompt = preset.1
+                            ForEach(promptPresets) { preset in
+                                Button(preset.id) {
+                                    llamaState.systemPrompt = preset.prompt
                                 }
                                 .buttonStyle(.bordered)
                             }

@@ -1226,6 +1226,7 @@ class LlamaState: ObservableObject {
             // If still over budget with system + last user, drop system
             if currentTokenCount > budget, chatMessages.count > 1, chatMessages.first?.role == "system" {
                 chatMessages.removeFirst()
+                currentTokenCount = await inferenceEngine.countTokens(for: chatMessages)
             }
             contextTokenCount = currentTokenCount
             if trimmed {
@@ -1682,6 +1683,9 @@ class LlamaState: ObservableObject {
 
     func loadConversation(id: UUID) {
         saveCurrentConversation()
+        attachedDocument = nil
+        documentImportError = nil
+        contextTokenCount = 0
         guard let conversation = conversationManager?.loadFullConversation(id: id) else { return }
         messages = conversation.messages
         currentConversation = conversation

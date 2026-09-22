@@ -11,7 +11,10 @@ on:
     paths:
       - '.github/workflows/nedolm-ios.yml'
       - 'ios-app/**'
-      - 'scripts/build-nedolm-llama-ios.sh'
+      - 'scripts/build-libmercan-ios.sh'
+      - 'CMakeLists.txt'
+      - 'core/**'
+      - 'architectures/**'
       - 'runtime/**'
 
 permissions:

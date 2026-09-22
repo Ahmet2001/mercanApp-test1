@@ -510,6 +510,42 @@ void mercan_generic_context_free(mercan_generic_context * c) {
     delete c;
 }
 
+int32_t mercan_generic_context_reset(mercan_generic_context * c, bool clear_data, std::string & error) {
+    if (!c) { error = "invalid generic context"; return -1; }
+    if (c->sched) ggml_backend_sched_reset(c->sched);
+    if (c->graph_ctx) {
+        ggml_free(c->graph_ctx);
+        c->graph_ctx = nullptr;
+    }
+    c->n_past = 0;
+    c->logits.clear();
+    if (clear_data) {
+        for (auto & lc : c->layer_caches) {
+            if (lc.buffer) ggml_backend_buffer_clear(lc.buffer, 0);
+        }
+        if (c->model && c->model->backend) ggml_backend_synchronize(c->model->backend);
+    }
+    return 0;
+}
+
+int32_t mercan_generic_context_rewind(mercan_generic_context * c, uint32_t token_count, std::string & error) {
+    if (!c) { error = "invalid generic context"; return -1; }
+    if (token_count > c->n_past) {
+        error = "generic rewind position exceeds decoded token count";
+        return -1;
+    }
+    if (c->sched) ggml_backend_sched_reset(c->sched);
+    if (c->graph_ctx) {
+        ggml_free(c->graph_ctx);
+        c->graph_ctx = nullptr;
+    }
+    c->n_past = token_count;
+    c->logits.clear();
+    // Cache storage after token_count is intentionally retained. Future decode
+    // calls overwrite from n_past onward and masks never read the discarded tail.
+    return 0;
+}
+
 int32_t mercan_generic_decode(mercan_generic_context * c, const mercan_token * tokens, int32_t n, std::string & error) {
     if (!c || !tokens || n <= 0) { error = "invalid generic decode arguments"; return -1; }
     if (static_cast<uint64_t>(c->n_past) + static_cast<uint64_t>(n) > c->params.n_ctx) {

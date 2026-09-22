@@ -449,7 +449,11 @@ mercan_token mercan_sample_next(mercan_context * ctx, mercan_sampler_params para
     auto by_logit = [](const candidate & a, const candidate & b) { return a.logit > b.logit; };
 
     if (params.temperature <= 0.0f) {
-        return std::max_element(candidates.begin(), candidates.end(), by_logit)->id;
+        return std::max_element(
+            candidates.begin(),
+            candidates.end(),
+            [](const candidate & a, const candidate & b) { return a.logit < b.logit; }
+        )->id;
     }
 
     const int32_t requested_top_k = params.top_k <= 0 ? n_vocab : params.top_k;

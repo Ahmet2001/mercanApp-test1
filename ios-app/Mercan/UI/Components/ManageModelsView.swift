@@ -33,7 +33,7 @@ struct ManageModelsView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("This iPhone")
                                 .fontWeight(.semibold)
-                            Text(String(format: "%.1f GiB memory • recommended context %d", llamaState.getTotalRAMInGiB(), llamaState.recommendedContextSize()))
+                            Text("\(String(format: "%.1f", llamaState.getTotalRAMInGiB())) GiB memory • recommended context \(llamaState.recommendedContextSize())")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }

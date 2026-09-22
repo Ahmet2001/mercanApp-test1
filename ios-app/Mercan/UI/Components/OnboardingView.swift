@@ -1,13 +1,35 @@
 import SwiftUI
 
+private struct OnboardingPage: Identifiable {
+    let id: Int
+    let title: String
+    let detail: String
+    let symbol: String
+}
+
 struct OnboardingView: View {
     let onFinish: () -> Void
     @State private var page = 0
 
-    private let pages: [(String, String, String)] = [
-        ("Private by design", "Your model and conversations stay on this device. Internet access is only needed when you choose to download a model.", "lock.shield"),
-        ("Mercan models", "Mercan uses the libmercan runtime and validates model format, architecture and tokenizer compatibility before inference.", "cube.transparent"),
-        ("Ready for local AI", "Chat, attach documents, tune generation settings and inspect performance without sending prompts to a remote inference API.", "iphone.gen3")
+    private let pages = [
+        OnboardingPage(
+            id: 0,
+            title: "Private by design",
+            detail: "Your model and conversations stay on this device. Internet access is only needed when you choose to download a model.",
+            symbol: "lock.shield"
+        ),
+        OnboardingPage(
+            id: 1,
+            title: "Mercan models",
+            detail: "Mercan uses the libmercan runtime and validates model format, architecture and tokenizer compatibility before inference.",
+            symbol: "cube.transparent"
+        ),
+        OnboardingPage(
+            id: 2,
+            title: "Ready for local AI",
+            detail: "Chat, attach documents, tune generation settings and inspect performance without sending prompts to a remote inference API.",
+            symbol: "iphone.gen3"
+        )
     ]
 
     var body: some View {
@@ -16,28 +38,27 @@ struct OnboardingView: View {
 
             VStack(spacing: 24) {
                 Spacer(minLength: 36)
-
                 MercanWordmark()
 
                 TabView(selection: $page) {
-                    ForEach(Array(pages.enumerated()), id: \.offset) { index, page in
+                    ForEach(pages) { item in
                         VStack(spacing: 22) {
-                            Image(systemName: page.2)
+                            Image(systemName: item.symbol)
                                 .font(.system(size: 46, weight: .medium))
                                 .foregroundStyle(MercanTheme.coral)
                                 .frame(height: 64)
 
-                            Text(page.0)
+                            Text(item.title)
                                 .font(.system(size: 28, weight: .semibold, design: .serif))
                                 .multilineTextAlignment(.center)
 
-                            Text(page.1)
+                            Text(item.detail)
                                 .font(.body)
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)
                                 .padding(.horizontal, 28)
                         }
-                        .tag(index)
+                        .tag(item.id)
                     }
                 }
                 .tabViewStyle(.page(indexDisplayMode: .always))

@@ -98,9 +98,11 @@ struct ManageModelsView: View {
                     }
                 }
 
-                Section("Import") {
+                Section {
                     LoadCustomButton(llamaState: llamaState)
                     InputButton(llamaState: llamaState)
+                } header: {
+                    Text("Import")
                 } footer: {
                     Text("Imports must use the Mercan model format. libmercan validates architecture, runtime ABI and tokenizer compatibility when a model is loaded.")
                 }

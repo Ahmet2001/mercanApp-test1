@@ -2,44 +2,62 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct LoadCustomButton: View {
-    @ObservedObject private var llamaState: LlamaState
+    @ObservedObject var llamaState: LlamaState
     @State private var showFileImporter = false
+    @State private var importError: String?
 
-    init(llamaState: LlamaState) {
-        self.llamaState = llamaState
-    }
+    private static let mercanType = UTType(filenameExtension: "mercan", conformingTo: .data)!
 
     var body: some View {
-        VStack {
-            Button(action: {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
                 showFileImporter = true
-            }) {
-                Text("Load Custom Model")
+            } label: {
+                Label("Import Mercan Model", systemImage: "square.and.arrow.down")
+            }
+
+            if let importError {
+                Text(importError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
         }
         .fileImporter(
             isPresented: $showFileImporter,
-            allowedContentTypes: [UTType(filenameExtension: "gguf", conformingTo: .data)!],
+            allowedContentTypes: [Self.mercanType],
             allowsMultipleSelection: false
         ) { result in
             switch result {
             case .success(let files):
-                files.forEach { file in
-                    let gotAccess = file.startAccessingSecurityScopedResource()
-                    if !gotAccess { return }
+                guard let source = files.first else { return }
+                importError = nil
 
-                    Task {
-                        do {
-                            try await llamaState.loadModel(modelUrl: file.absoluteURL)
-                        } catch let err {
-                            print("Error: \(err.localizedDescription)")
-                        }
+                Task {
+                    do {
+                        let destination = llamaState.getDocumentsDirectory()
+                            .appendingPathComponent(source.lastPathComponent)
+
+                        let copiedURL = try await Task.detached(priority: .userInitiated) {
+                            let gotAccess = source.startAccessingSecurityScopedResource()
+                            defer {
+                                if gotAccess { source.stopAccessingSecurityScopedResource() }
+                            }
+
+                            if FileManager.default.fileExists(atPath: destination.path) {
+                                try FileManager.default.removeItem(at: destination)
+                            }
+                            try FileManager.default.copyItem(at: source, to: destination)
+                            return destination
+                        }.value
+
+                        try await llamaState.loadModel(modelUrl: copiedURL)
+                    } catch {
+                        importError = error.localizedDescription
                     }
-
-                    file.stopAccessingSecurityScopedResource()
                 }
+
             case .failure(let error):
-                print(error)
+                importError = error.localizedDescription
             }
         }
     }

@@ -1,5 +1,9 @@
 name: Mercan iOS
 
+concurrency:
+  group: mercan-ios-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   workflow_dispatch:
   push:

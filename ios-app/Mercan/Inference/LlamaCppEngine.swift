@@ -2,6 +2,7 @@ import Foundation
 
 actor MercanRuntimeEngine: InferenceEngine {
     private var runtimeContext: MercanRuntimeContext?
+    private var samplingConfiguration = SamplingConfiguration.standard
     var isComplete: Bool = true
 
     init() {}
@@ -19,6 +20,14 @@ actor MercanRuntimeEngine: InferenceEngine {
             )
         }.value
         runtimeContext = context
+        await context.setSampling(samplingConfiguration)
+    }
+
+    func setSampling(_ configuration: SamplingConfiguration) async {
+        samplingConfiguration = configuration
+        if let runtimeContext {
+            await runtimeContext.setSampling(configuration)
+        }
     }
 
     func generateNext(messages: [(role: String, content: String)]) async throws {
@@ -30,6 +39,7 @@ actor MercanRuntimeEngine: InferenceEngine {
             )
         }
 
+        await context.setSampling(samplingConfiguration)
         let finalPrompt = await context.apply_chat_template(messages: messages)
         try await context.completion_init_with_cache(text: finalPrompt)
         isComplete = false

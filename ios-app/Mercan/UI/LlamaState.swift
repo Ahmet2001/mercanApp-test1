@@ -307,6 +307,33 @@ class LlamaState: ObservableObject {
         didSet { UserDefaults.standard.set(speakRepliesEnabled, forKey: "speakRepliesEnabled") }
     }
 
+    @Published var temperature: Double = 0.7 {
+        didSet { UserDefaults.standard.set(temperature, forKey: "temperature") }
+    }
+    @Published var topP: Double = 0.95 {
+        didSet { UserDefaults.standard.set(topP, forKey: "topP") }
+    }
+    @Published var topK: Int = 40 {
+        didSet { UserDefaults.standard.set(topK, forKey: "topK") }
+    }
+    @Published var minP: Double = 0.05 {
+        didSet { UserDefaults.standard.set(minP, forKey: "minP") }
+    }
+    @Published var repeatPenalty: Double = 1.10 {
+        didSet { UserDefaults.standard.set(repeatPenalty, forKey: "repeatPenalty") }
+    }
+
+    private var samplingConfiguration: SamplingConfiguration {
+        SamplingConfiguration(
+            temperature: Float(temperature),
+            topK: Int32(topK),
+            topP: Float(topP),
+            minP: Float(minP),
+            repeatPenalty: Float(repeatPenalty),
+            repeatLastN: 64
+        )
+    }
+
     let speechSynthesizer = SpeechSynthesizerService()
     private var suspendedModelURL: URL?
 
@@ -573,6 +600,7 @@ class LlamaState: ObservableObject {
                     self?.modelLoadProgress = Double(progress)
                 }
             }
+            await engine.setSampling(samplingConfiguration)
         } catch {
             inferenceEngine = nil
             throw error
@@ -629,6 +657,21 @@ class LlamaState: ObservableObject {
     init() {
         self.systemPrompt = UserDefaults.standard.string(forKey: "systemPrompt") ?? ""
         self.speakRepliesEnabled = UserDefaults.standard.bool(forKey: "speakRepliesEnabled")
+        if UserDefaults.standard.object(forKey: "temperature") != nil {
+            self.temperature = UserDefaults.standard.double(forKey: "temperature")
+        }
+        if UserDefaults.standard.object(forKey: "topP") != nil {
+            self.topP = UserDefaults.standard.double(forKey: "topP")
+        }
+        if UserDefaults.standard.object(forKey: "topK") != nil {
+            self.topK = max(1, UserDefaults.standard.integer(forKey: "topK"))
+        }
+        if UserDefaults.standard.object(forKey: "minP") != nil {
+            self.minP = UserDefaults.standard.double(forKey: "minP")
+        }
+        if UserDefaults.standard.object(forKey: "repeatPenalty") != nil {
+            self.repeatPenalty = UserDefaults.standard.double(forKey: "repeatPenalty")
+        }
         let saved = UserDefaults.standard.integer(forKey: "contextSize")
         #if targetEnvironment(simulator)
         self.contextSize = saved > 0 ? UInt32(min(saved, 2048)) : 2048
@@ -1167,6 +1210,7 @@ class LlamaState: ObservableObject {
                 return
             }
 
+            await inferenceEngine.setSampling(samplingConfiguration)
             do {
                 try await inferenceEngine.generateNext(messages: chatMessages)
             } catch {
@@ -1361,6 +1405,7 @@ class LlamaState: ObservableObject {
         do {
             await inferenceEngine.clearGenerationState()
             await inferenceEngine.resume()
+            await inferenceEngine.setSampling(samplingConfiguration)
             try await inferenceEngine.generateNext(messages: titleMessages)
 
             let titleFilter = SpecialTokenFilter()

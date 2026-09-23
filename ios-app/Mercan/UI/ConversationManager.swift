@@ -29,8 +29,14 @@ struct ConversationSummary: Identifiable {
 class ConversationManager: ObservableObject {
     @Published var conversations: [ConversationSummary] = []
     @Published var currentConversationId: UUID?
+    @Published private(set) var pinnedConversationIds: Set<UUID> = []
+    @Published private(set) var projectNames: [String] = []
+    @Published private(set) var projectAssignments: [UUID: String] = [:]
 
     private let fileManager = FileManager.default
+    private let pinnedKey = "mercan.pinnedConversationIds"
+    private let projectsKey = "mercan.projectNames"
+    private let assignmentsKey = "mercan.projectAssignments"
 
     private var conversationsDirectory: URL {
         let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -38,6 +44,15 @@ class ConversationManager: ObservableObject {
     }
 
     init() {
+        let rawPinned = UserDefaults.standard.stringArray(forKey: pinnedKey) ?? []
+        pinnedConversationIds = Set(rawPinned.compactMap(UUID.init(uuidString:)))
+        projectNames = UserDefaults.standard.stringArray(forKey: projectsKey) ?? []
+        if let rawAssignments = UserDefaults.standard.dictionary(forKey: assignmentsKey) as? [String: String] {
+            projectAssignments = Dictionary(uniqueKeysWithValues: rawAssignments.compactMap { key, value in
+                guard let id = UUID(uuidString: key) else { return nil }
+                return (id, value)
+            })
+        }
         createConversationsDirectoryIfNeeded()
         loadConversations()
     }
@@ -70,8 +85,7 @@ class ConversationManager: ObservableObject {
             }
         }
 
-        // Sort by most recently updated
-        conversations = loaded.sorted { $0.updatedAt > $1.updatedAt }
+        conversations = sortedSummaries(loaded)
     }
 
     func save(_ conversation: Conversation) {
@@ -99,14 +113,100 @@ class ConversationManager: ObservableObject {
             conversations.insert(summary, at: 0)
         }
 
-        // Re-sort by most recent
-        conversations.sort { $0.updatedAt > $1.updatedAt }
+        conversations = sortedSummaries(conversations)
+    }
+
+    func isPinned(_ conversationId: UUID) -> Bool {
+        pinnedConversationIds.contains(conversationId)
+    }
+
+    func togglePin(_ conversationId: UUID) {
+        if pinnedConversationIds.contains(conversationId) {
+            pinnedConversationIds.remove(conversationId)
+        } else {
+            pinnedConversationIds.insert(conversationId)
+        }
+        persistPins()
+        conversations = sortedSummaries(conversations)
+    }
+
+    func filteredConversations(searchText: String, project: String? = nil, unfiledOnly: Bool = false) -> [ConversationSummary] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        var values = conversations
+
+        if let project {
+            values = values.filter { projectAssignments[$0.id] == project }
+        } else if unfiledOnly {
+            values = values.filter { projectAssignments[$0.id] == nil }
+        }
+
+        if !query.isEmpty {
+            values = values.filter {
+                $0.displayTitle.localizedCaseInsensitiveContains(query)
+            }
+        }
+        return sortedSummaries(values)
+    }
+
+    func project(for conversationId: UUID) -> String? {
+        projectAssignments[conversationId]
+    }
+
+    func createProject(named rawName: String) {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !projectNames.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) else { return }
+        projectNames.append(name)
+        projectNames.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        persistProjects()
+    }
+
+    func assign(_ conversationId: UUID, to project: String?) {
+        if let project, !project.isEmpty {
+            if !projectNames.contains(project) {
+                createProject(named: project)
+            }
+            projectAssignments[conversationId] = project
+        } else {
+            projectAssignments.removeValue(forKey: conversationId)
+        }
+        persistProjects()
+    }
+
+    func rename(_ conversationId: UUID, to rawTitle: String) {
+        let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, var conversation = loadFullConversation(id: conversationId) else { return }
+        conversation.title = title
+        conversation.updatedAt = Date()
+        save(conversation)
+    }
+
+    private func sortedSummaries(_ values: [ConversationSummary]) -> [ConversationSummary] {
+        values.sorted { lhs, rhs in
+            let lp = pinnedConversationIds.contains(lhs.id)
+            let rp = pinnedConversationIds.contains(rhs.id)
+            if lp != rp { return lp && !rp }
+            return lhs.updatedAt > rhs.updatedAt
+        }
+    }
+
+    private func persistPins() {
+        UserDefaults.standard.set(pinnedConversationIds.map(\.uuidString), forKey: pinnedKey)
+    }
+
+    private func persistProjects() {
+        UserDefaults.standard.set(projectNames, forKey: projectsKey)
+        let raw = Dictionary(uniqueKeysWithValues: projectAssignments.map { ($0.key.uuidString, $0.value) })
+        UserDefaults.standard.set(raw, forKey: assignmentsKey)
     }
 
     func delete(_ conversationId: UUID) {
         let fileURL = conversationsDirectory.appendingPathComponent("\(conversationId.uuidString).json")
         try? fileManager.removeItem(at: fileURL)
         conversations.removeAll { $0.id == conversationId }
+        pinnedConversationIds.remove(conversationId)
+        projectAssignments.removeValue(forKey: conversationId)
+        persistPins()
+        persistProjects()
 
         if currentConversationId == conversationId {
             currentConversationId = nil

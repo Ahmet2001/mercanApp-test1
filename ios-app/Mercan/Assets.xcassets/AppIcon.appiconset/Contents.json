@@ -1,29 +1,25 @@
 {
   "images" : [
     {
-      "filename" : "logo.jpg",
+      "filename" : "mercan-appicon.png",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"
     },
     {
       "appearances" : [
-        {
-          "appearance" : "luminosity",
-          "value" : "dark"
-        }
+        { "appearance" : "luminosity", "value" : "dark" }
       ],
+      "filename" : "mercan-appicon.png",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"
     },
     {
       "appearances" : [
-        {
-          "appearance" : "luminosity",
-          "value" : "tinted"
-        }
+        { "appearance" : "luminosity", "value" : "tinted" }
       ],
+      "filename" : "mercan-appicon.png",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"

@@ -4,196 +4,174 @@ struct ManageModelsView: View {
     @ObservedObject var llamaState: LlamaState
     @Environment(\.dismiss) private var dismiss
 
-    func deleteModel(at offsets: IndexSet) {
-        for index in offsets {
-            let model = llamaState.downloadedModels[index]
-            let fileURL = getDocumentsDirectory().appendingPathComponent(model.filename)
-            do {
-                try FileManager.default.removeItem(at: fileURL)
-                llamaState.downloadedModels.remove(at: index)
-                llamaState.restoreToUndownloaded(filename: model.filename)
-            } catch {
-                print("Error deleting file: \(error)")
-            }
+    private var activeFilenameStem: String {
+        llamaState.currentModelName
+    }
+
+    private func isActive(_ model: Model) -> Bool {
+        URL(fileURLWithPath: model.filename).deletingPathExtension().lastPathComponent == activeFilenameStem
+            || model.name == llamaState.currentModelName
+    }
+
+    private func deleteModel(_ model: Model) {
+        guard !isActive(model) else { return }
+        let fileURL = llamaState.getDocumentsDirectory().appendingPathComponent(model.filename)
+        do {
+            try FileManager.default.removeItem(at: fileURL)
+            llamaState.downloadedModels.removeAll { $0.filename == model.filename }
+            llamaState.restoreToUndownloaded(filename: model.filename)
+        } catch {
+            llamaState.modelLoadError = "Could not delete \(model.filename): \(error.localizedDescription)"
         }
     }
 
-    func getDocumentsDirectory() -> URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-    }
-
     var body: some View {
-        NavigationView {
+        NavigationStack {
             List {
-                // MARK: - Download Section
                 Section {
-                    InputButton(llamaState: llamaState)
-                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-
-                    LoadCustomButton(llamaState: llamaState)
-                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("This iPhone")
+                                .fontWeight(.semibold)
+                            Text("\(String(format: "%.1f", llamaState.getTotalRAMInGiB())) GiB memory • recommended context \(llamaState.recommendedContextSize())")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "iphone")
+                            .foregroundStyle(MercanTheme.coral)
+                    }
                 }
 
-                // MARK: - Downloaded Models Section
                 if !llamaState.downloadedModels.isEmpty {
-                    Section {
-                        ForEach(Array(llamaState.downloadedModels.enumerated()), id: \.element.id) { index, model in
-                                    ModelListRow(
+                    Section("On device") {
+                        ForEach(llamaState.downloadedModels) { model in
+                            DownloadedModelRow(
                                 model: model,
-                                isDownloaded: true,
-                                isActive: model.filename.replacingOccurrences(of: ".gguf", with: "") == llamaState.currentModelName
-                                    || model.name == llamaState.currentModelName
-                            ) {
-                                deleteModel(at: IndexSet(integer: index))
-                            }
+                                fileSize: llamaState.localModelSize(filename: model.filename),
+                                isActive: isActive(model),
+                                onLoad: {
+                                    let url = llamaState.getDocumentsDirectory().appendingPathComponent(model.filename)
+                                    Task {
+                                        try? await llamaState.loadModel(modelUrl: url)
+                                    }
+                                },
+                                onDelete: { deleteModel(model) }
+                            )
                         }
-                    } header: {
-                        Text("Downloaded Models")
                     }
                 }
 
-                // MARK: - Recommended Models Section
+                Section("Mercan Catalog") {
+                    let available = llamaState.undownloadedModels
+                    if available.isEmpty {
+                        Label("All catalog models are on device", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(available) { model in
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(model.name)
+                                            .fontWeight(.semibold)
+                                        Text(model.filename)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if model.rec == true {
+                                        Text("Recommended")
+                                            .font(.caption2.weight(.semibold))
+                                            .foregroundStyle(MercanTheme.coral)
+                                    }
+                                }
+
+                                DownloadButton(
+                                    llamaState: llamaState,
+                                    modelName: model.name,
+                                    modelUrl: model.url,
+                                    filename: model.filename
+                                )
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                }
+
                 Section {
-                    let recommendedModels = llamaState.undownloadedModels.filter { $0.rec == true }
-                    ForEach(recommendedModels, id: \.id) { model in
-                        DownloadButton(
-                            llamaState: llamaState,
-                            modelName: model.name,
-                            modelUrl: model.url,
-                            filename: model.filename
-                        )
-                    }
+                    LoadCustomButton(llamaState: llamaState)
+                    InputButton(llamaState: llamaState)
                 } header: {
-                    Text("Recommended Models")
-                }
-
-                // MARK: - Whisper Speech Models (for video/voice transcription)
-                if !llamaState.downloadedWhisperModels.isEmpty {
-                    Section {
-                        ForEach(llamaState.downloadedWhisperModels, id: \.id) { model in
-                            HStack {
-                                Text(model.name)
-                                Spacer()
-                                Text("Downloaded")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    } header: {
-                        Text("Downloaded Speech Models")
-                    }
+                    Text("Import")
+                } footer: {
+                    Text("Imports must use the Mercan model format. libmercan validates architecture, runtime ABI and tokenizer compatibility when a model is loaded.")
                 }
 
                 Section {
-                    ForEach(llamaState.whisperModels.filter { model in
-                        !llamaState.downloadedWhisperModels.contains(where: { $0.filename == model.filename })
-                    }, id: \.id) { model in
-                        Button {
-                            llamaState.downloadWhisperModel(model)
-                        } label: {
-                            HStack {
-                                Text(model.name)
-                                Spacer()
-                                Image(systemName: "arrow.down.circle")
-                            }
-                        }
+                    NavigationLink {
+                        DiagnosticsView(llamaState: llamaState)
+                    } label: {
+                        Label("Runtime diagnostics", systemImage: "waveform.path.ecg")
                     }
-                } header: {
-                    Text("Speech Models (Whisper)")
                 }
             }
-            .navigationTitle("Manage Models")
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Models")
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: { dismiss() }) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(.secondary)
-                            .frame(width: 32, height: 32)
-                            .background(Color(.systemGray5))
-                            .clipShape(Circle())
-                    }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
                 }
             }
         }
     }
 }
 
-// MARK: - Helper Components
-
-struct ModelListRow: View {
+private struct DownloadedModelRow: View {
     let model: Model
-    let isDownloaded: Bool
-    var isActive: Bool = false
-    var onDelete: (() -> Void)?
+    let fileSize: Int64
+    let isActive: Bool
+    let onLoad: () -> Void
+    let onDelete: () -> Void
 
-    private var displayName: String {
-        // Extract name without size, e.g. "SmolLM2-360M Q8 (0.4 GiB)" -> "SmolLM2-360M Q8"
-        var name = model.name
-        if let range = name.range(of: " (") {
-            name = String(name[..<range.lowerBound])
-        }
-        // Capitalize first letter
-        return name.prefix(1).uppercased() + name.dropFirst()
-    }
-
-    private var modelSize: String {
-        // Extract size from name, e.g. "SmolLM2-360M Q8 (0.4 GiB)" -> "0.4 GiB"
-        if let start = model.name.range(of: "("),
-           let end = model.name.range(of: ")") {
-            return String(model.name[start.upperBound..<end.lowerBound])
-        }
-        // For downloaded models, get file size from disk
-        if isDownloaded {
-            return getFileSize()
-        }
-        return ""
-    }
-
-    private func getFileSize() -> String {
-        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let fileURL = documentsURL.appendingPathComponent(model.filename)
-        if let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
-           let size = attrs[.size] as? Int64 {
-            return ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
-        }
-        return ""
+    private var sizeLabel: String {
+        ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)
     }
 
     var body: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(displayName)
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-                    .foregroundColor(.primary)
-                    .lineLimit(2)
-
-                HStack(spacing: 6) {
-                    if !modelSize.isEmpty {
-                        Text(modelSize)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    if isActive {
-                        Text("Active")
-                            .font(.caption2)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(model.name)
                             .fontWeight(.semibold)
-                            .foregroundColor(.green)
+                        if isActive {
+                            Text("ACTIVE")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(MercanTheme.coral)
+                        }
                     }
+                    Text("\(sizeLabel) • Mercan")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
+                Spacer()
             }
 
-            Spacer()
+            HStack {
+                Button(isActive ? "Loaded" : "Load", action: onLoad)
+                    .buttonStyle(.borderedProminent)
+                    .tint(MercanTheme.coral)
+                    .disabled(isActive)
 
-            if let onDelete = onDelete {
-                Button(action: onDelete) {
-                    Image(systemName: "trash")
-                        .foregroundColor(.primary)
+                Spacer()
+
+                if !isActive {
+                    Button(role: .destructive, action: onDelete) {
+                        Label("Delete", systemImage: "trash")
+                    }
+                    .buttonStyle(.borderless)
                 }
-                .buttonStyle(BorderlessButtonStyle())
             }
         }
+        .padding(.vertical, 4)
     }
 }

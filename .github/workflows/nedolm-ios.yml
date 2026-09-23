@@ -10,6 +10,7 @@ on:
     branches:
       - main
       - 'refactor/**'
+      - 'feature/**'
     tags:
       - 'ios-v*'
     paths:
@@ -26,12 +27,17 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 90
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
 
       - name: Prepare Mercan iOS frameworks
         run: |
@@ -93,5 +99,4 @@ jobs:
           api-key-id: ${{ vars.APPSTORE_API_KEY_ID }}
           api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
           uses-non-exempt-encryption: 'false'
-          wait-for-processing: 'true'
-          backend: AppStoreAPI
+          backend: altool

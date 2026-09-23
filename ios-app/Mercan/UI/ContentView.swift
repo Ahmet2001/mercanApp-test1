@@ -1,71 +1,86 @@
 import SwiftUI
-import PhotosUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @StateObject var llamaState = LlamaState()
-    @StateObject var conversationManager = ConversationManager()
+    @StateObject private var llamaState = LlamaState()
+    @StateObject private var conversationManager = ConversationManager()
+
     @State private var inputText = ""
     @State private var drawerOffset: CGFloat = 0
+
     @State private var showSettings = false
     @State private var showManageModels = false
-    @State private var showVideoPicker = false
-    @State private var videoPickerItem: PhotosPickerItem?
-    @State private var showTranscript = false
-    @State private var videoImportError: String?
-    @State private var showVideoTranscriptBanner = false
-    @StateObject private var jobManager = TranscriptionJobManager()
-    @StateObject private var voiceSession = VoiceSession()
+    @State private var showBenchmark = false
+    @State private var showDiagnostics = false
+    @State private var showPrivacy = false
+    @State private var showDocumentImporter = false
+    @State private var showOnboarding = false
+
+    @AppStorage("mercan.didCompleteOnboarding") private var didCompleteOnboarding = false
+
     @FocusState private var isFocused: Bool
-    @State private var voiceErrorMessage: String?
 
-    private let drawerWidth: CGFloat = 300
+    private let drawerWidth: CGFloat = 310
 
-    private var isDrawerOpen: Bool {
-        drawerOffset > drawerWidth / 2
+    private var supportedDocumentTypes: [UTType] {
+        var values: [UTType] = [.pdf, .plainText, .json, .commaSeparatedText]
+        if let markdown = UTType(filenameExtension: "md") {
+            values.append(markdown)
+        }
+        return values
+    }
+
+    private var lastAssistantMessageID: UUID? {
+        llamaState.messages.last(where: { !$0.isUser })?.id
     }
 
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .leading) {
-                // Drawer
                 DrawerView(
                     llamaState: llamaState,
                     conversationManager: conversationManager,
-                    showSettings: $showSettings,
-                    onClose: {
-                        drawerOffset = 0
-                    },
+                    onClose: closeDrawer,
                     onNewChat: {
-                        dismissVideoTranscriptBanner()
-                        Task {
-                            await llamaState.clear()
-                        }
-                        withAnimation(.easeOut(duration: 0.25)) {
-                            drawerOffset = 0
-                        }
+                        Task { await llamaState.startNewConversation() }
+                        closeDrawer()
                     },
                     onSelectConversation: { summary in
                         llamaState.loadConversation(id: summary.id)
-                        withAnimation(.easeOut(duration: 0.25)) {
-                            drawerOffset = 0
-                        }
+                        closeDrawer()
                     },
                     onDeleteConversation: { summary in
                         if summary.id == llamaState.currentConversation?.id {
-                            Task {
-                                await llamaState.clear()
-                            }
+                            Task { await llamaState.startNewConversation() }
                         }
                         conversationManager.delete(summary.id)
+                    },
+                    onManageModels: {
+                        closeDrawer()
+                        showManageModels = true
+                    },
+                    onSettings: {
+                        closeDrawer()
+                        showSettings = true
+                    },
+                    onBenchmark: {
+                        closeDrawer()
+                        showBenchmark = true
+                    },
+                    onDiagnostics: {
+                        closeDrawer()
+                        showDiagnostics = true
+                    },
+                    onPrivacy: {
+                        closeDrawer()
+                        showPrivacy = true
                     }
                 )
                 .frame(width: drawerWidth)
                 .offset(x: -drawerWidth + drawerOffset)
-                .zIndex(drawerOffset > 0 ? 1 : -1)
+                .zIndex(drawerOffset > 0 ? 2 : -1)
 
-                // Main chat view
                 VStack(spacing: 0) {
-                    // Header
                     HeaderView(
                         currentModel: llamaState.currentModelName,
                         models: llamaState.downloadedModels,
@@ -73,9 +88,8 @@ struct ContentView: View {
                         isDownloading: llamaState.isDownloadingDefault,
                         isGenerating: llamaState.isGenerating,
                         downloadProgress: llamaState.defaultDownloadProgress,
-                        modelLoadProgress: llamaState.modelLoadProgress,
                         onMenuTap: {
-                            withAnimation(.easeOut(duration: 0.25)) {
+                            withAnimation(.easeOut(duration: 0.22)) {
                                 drawerOffset = drawerOffset > 0 ? 0 : drawerWidth
                             }
                         },
@@ -84,56 +98,52 @@ struct ContentView: View {
                             Task { try? await llamaState.loadModel(modelUrl: fileURL) }
                         },
                         onNewChat: {
-                            dismissVideoTranscriptBanner()
-                            Task {
-                                await llamaState.clear()
-                            }
+                            Task { await llamaState.startNewConversation() }
                         },
-                        onManageModels: {
-                            showManageModels = true
-                        }
+                        onManageModels: { showManageModels = true }
                     )
 
-                    if let modelError = llamaState.modelLoadError, !llamaState.isModelLoaded, !llamaState.isLoadingModel {
-                        Text(modelError)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 16)
-                            .padding(.top, 4)
-                    }
+                    ContextStatusBar(llamaState: llamaState)
 
-                    if showVideoTranscriptBanner {
-                        VideoTranscriptBanner(
-                            phase: videoTranscriptBannerPhase,
-                            thumbnail: jobManager.videoThumbnail ?? llamaState.attachedVideoThumbnail,
-                            onViewTranscript: { showTranscript = true },
-                            onDismiss: dismissVideoTranscriptBanner,
-                            onCancelTranscription: jobManager.isRunning ? { jobManager.cancel() } : nil
+                    if let modelError = llamaState.modelLoadError,
+                       !llamaState.isLoadingModel {
+                        ModelErrorCard(
+                            message: modelError,
+                            onModels: { showManageModels = true }
                         )
+                        .padding(.horizontal, 12)
+                        .padding(.top, 8)
                     }
 
-                    // Chat area
+                    if let document = llamaState.attachedDocument {
+                        DocumentAttachmentChip(
+                            document: document,
+                            onRemove: { llamaState.clearAttachedDocument() }
+                        )
+                        .padding(.horizontal, 12)
+                        .padding(.top, 8)
+                    }
+
                     if llamaState.messages.isEmpty && !llamaState.isGenerating {
                         Spacer()
-                        EmptyStateView()
+                        EmptyStateView { suggestion in
+                            inputText = suggestion
+                            isFocused = true
+                        }
                         Spacer()
                     } else {
                         ScrollViewReader { proxy in
                             ScrollView {
-                                LazyVStack(spacing: 12) {
+                                LazyVStack(spacing: 18) {
                                     ForEach(llamaState.messages) { message in
-                                        if message.isVideoTranscriptAttachment {
-                                            VideoTranscriptMessageBubble(
-                                                characterCount: llamaState.transcriptCharacterCount,
-                                                thumbnail: llamaState.attachedVideoThumbnail ?? jobManager.videoThumbnail,
-                                                onTap: { showTranscript = true }
-                                            )
-                                            .id(message.id)
-                                        } else {
-                                            MessageBubble(message: message)
-                                                .id(message.id)
-                                        }
+                                        MessageBubble(
+                                            message: message,
+                                            isLastAssistant: message.id == lastAssistantMessageID,
+                                            onRegenerate: {
+                                                Task { await llamaState.regenerateLastResponse() }
+                                            }
+                                        )
+                                        .id(message.id)
                                     }
 
                                     if llamaState.isGenerating && llamaState.isThinking && llamaState.currentResponse.isEmpty {
@@ -146,210 +156,134 @@ struct ContentView: View {
                                             .id("streaming")
                                     }
                                 }
-                                .padding()
-                                .padding(.bottom, 60)
+                                .padding(.horizontal, 16)
+                                .padding(.top, 16)
+                                .padding(.bottom, 30)
                             }
+                            .scrollDismissesKeyboard(.interactively)
+                            .onTapGesture { isFocused = false }
                             .onChange(of: llamaState.messages.count) { _, _ in
-                                if let lastMessage = llamaState.messages.last {
-                                    withAnimation {
-                                        proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                                    }
-                                }
+                                scrollToBottom(proxy)
                             }
                             .onChange(of: llamaState.currentResponse) { _, _ in
                                 if llamaState.isGenerating {
-                                    withAnimation {
+                                    withAnimation(.easeOut(duration: 0.15)) {
                                         proxy.scrollTo("streaming", anchor: .bottom)
                                     }
                                 }
                             }
-                            // Fix 5: Scroll to thinking indicator
-                            .onChange(of: llamaState.isThinking) { _, newValue in
-                                if newValue {
-                                    withAnimation {
+                            .onChange(of: llamaState.isThinking) { _, value in
+                                if value {
+                                    withAnimation(.easeOut(duration: 0.15)) {
                                         proxy.scrollTo("thinking", anchor: .bottom)
                                     }
                                 }
                             }
-                            // Fix 8: Scroll to bottom on conversation load
                             .onChange(of: llamaState.currentConversation?.id) { _, _ in
-                                if let lastMessage = llamaState.messages.last {
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                                        withAnimation {
-                                            proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                                        }
-                                    }
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                                    scrollToBottom(proxy)
                                 }
                             }
-                        }
-                        .scrollContentBackground(.hidden)
-                        .onTapGesture {
-                            isFocused = false
                         }
                     }
 
-                    // Input composer
                     InputComposer(
                         text: $inputText,
                         isGenerating: llamaState.isGenerating,
-                        isListening: voiceSession.isListening,
-                        inputsDisabled: llamaState.modelSuspendedForSpeech || llamaState.speechSynthesizer.isSpeaking,
+                        inputsDisabled: llamaState.isLoadingModel,
                         onSend: { Task { await submitMessage() } },
-                        onStop: stopGeneration,
-                        onVideoImport: { showVideoPicker = true },
-                        onVoiceToggle: { Task { await handleVoiceToggle() } },
-                        onHoldVoiceStart: { Task { await startVoiceInput() } },
-                        onHoldVoiceEnd: { Task { await submitMessage() } },
+                        onStop: { Task { await llamaState.stop() } },
+                        onDocumentImport: { showDocumentImporter = true },
                         focusState: $isFocused
                     )
-                    if let voiceErrorMessage {
-                        Text(voiceErrorMessage)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .padding(.horizontal, 20)
-                            .padding(.bottom, 4)
-                    }
-                    if let videoImportError, !showVideoTranscriptBanner {
-                        Text(videoImportError)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .padding(.horizontal, 20)
-                            .padding(.bottom, 4)
-                    }
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height)
                 .offset(x: drawerOffset)
-                .overlay(
+                .overlay {
                     Color.black
-                        .opacity(Double(drawerOffset / drawerWidth) * 0.3)
+                        .opacity(Double(drawerOffset / drawerWidth) * 0.25)
                         .allowsHitTesting(drawerOffset > 0)
-                        .onTapGesture {
-                            withAnimation(.easeOut(duration: 0.25)) {
-                                drawerOffset = 0
-                            }
-                        }
-                )
-                .gesture(
-                    DragGesture(minimumDistance: 10)
-                        .onChanged { value in
-                            // Ignore gestures starting in bottom 80pt (Settings area)
-                            guard value.startLocation.y < geometry.size.height - 80 else { return }
-                            let translation = value.translation.width
-                            if drawerOffset == 0 {
-                                drawerOffset = min(max(0, translation), drawerWidth)
-                            } else {
-                                drawerOffset = min(max(0, drawerWidth + translation), drawerWidth)
-                            }
-                        }
-                        .onEnded { value in
-                            // Ignore gestures starting in bottom 80pt (Settings area)
-                            guard value.startLocation.y < geometry.size.height - 80 else { return }
-                            let velocity = value.predictedEndTranslation.width - value.translation.width
-                            withAnimation(.easeOut(duration: 0.25)) {
-                                if velocity > 100 || (drawerOffset > drawerWidth / 2 && velocity > -100) {
-                                    drawerOffset = drawerWidth
-                                } else {
-                                    drawerOffset = 0
-                                }
-                            }
-                        }
-                )
-            }
-            .sheet(isPresented: $showSettings) {
-                SettingsView(llamaState: llamaState)
-            }
-            .sheet(isPresented: $showManageModels) {
-                ManageModelsView(llamaState: llamaState)
-            }
-            .photosPicker(
-                isPresented: $showVideoPicker,
-                selection: $videoPickerItem,
-                matching: .videos
-            )
-            .sheet(isPresented: $showTranscript) {
-                TranscriptSheetLoader(llamaState: llamaState)
+                        .onTapGesture { closeDrawer() }
+                }
+                .gesture(drawerGesture(width: geometry.size.width))
             }
         }
         .background(Color(.systemBackground))
+        .tint(MercanTheme.coral)
         .onAppear {
             llamaState.conversationManager = conversationManager
-            jobManager.llamaState = llamaState
-            isFocused = true
+            showOnboarding = !didCompleteOnboarding
             Task {
                 if !llamaState.isModelLoaded, !llamaState.downloadedModels.isEmpty {
                     _ = await llamaState.ensureModelLoaded()
                 }
             }
         }
-        .onChange(of: voiceSession.partialTranscript) { _, newValue in
-            guard voiceSession.isListening else { return }
-            if !newValue.isEmpty {
-                inputText = newValue
+        .fullScreenCover(isPresented: $showOnboarding) {
+            OnboardingView {
+                didCompleteOnboarding = true
+                showOnboarding = false
             }
+            .interactiveDismissDisabled()
         }
-        .onChange(of: voiceSession.isListening) { _, isListening in
-            if isListening {
-                inputText = ""
-                voiceErrorMessage = nil
-            }
+        .sheet(isPresented: $showSettings) {
+            SettingsView(llamaState: llamaState)
         }
-        .onChange(of: voiceSession.errorMessage) { _, message in
-            voiceErrorMessage = message
+        .sheet(isPresented: $showManageModels) {
+            ManageModelsView(llamaState: llamaState)
         }
-        .onChange(of: videoPickerItem) { _, newItem in
-            guard let newItem else { return }
-            showVideoTranscriptBanner = true
-            jobManager.clearFailure()
-            videoImportError = nil
-            Task { await handlePickedVideo(newItem) }
+        .sheet(isPresented: $showBenchmark) {
+            NavigationStack { BenchmarkView(llamaState: llamaState) }
+        }
+        .sheet(isPresented: $showDiagnostics) {
+            NavigationStack { DiagnosticsView(llamaState: llamaState) }
+        }
+        .sheet(isPresented: $showPrivacy) {
+            NavigationStack { PrivacyView() }
+        }
+        .fileImporter(
+            isPresented: $showDocumentImporter,
+            allowedContentTypes: supportedDocumentTypes,
+            allowsMultipleSelection: false
+        ) { result in
+            handleDocumentImport(result)
         }
     }
 
-    private var videoTranscriptBannerPhase: VideoTranscriptBanner.Phase {
-        if let failure = jobManager.failureMessage {
-            return .failed(message: failure)
+    private func closeDrawer() {
+        withAnimation(.easeOut(duration: 0.22)) {
+            drawerOffset = 0
         }
-        if jobManager.isRunning {
-            return .transcribing(
-                progress: jobManager.progress,
-                message: jobManager.statusMessage,
-                modelSuspended: llamaState.modelSuspendedForSpeech
-            )
-        }
-        if llamaState.transcriptCharacterCount > 0 {
-            return .ready(characterCount: llamaState.transcriptCharacterCount)
-        }
-        if let videoImportError {
-            return .failed(message: videoImportError)
-        }
-        if jobManager.wasCancelled {
-            return .failed(message: String(localized: "Cancelled"))
-        }
-        return .preparing
     }
 
-    private func dismissVideoTranscriptBanner() {
-        if jobManager.isRunning {
-            jobManager.cancel()
-        }
-        jobManager.clearFailure()
-        videoImportError = nil
-        showVideoTranscriptBanner = false
-        llamaState.clearVideoTranscriptAttachment()
-    }
-
-    @MainActor
-    private func handlePickedVideo(_ item: PhotosPickerItem) async {
-        videoPickerItem = nil
-        do {
-            guard let movie = try await item.loadTransferable(type: ImportedVideoFile.self) else {
-                videoImportError = String(localized: "Could not load video from Photos.")
-                return
+    private func drawerGesture(width: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 12)
+            .onChanged { value in
+                let translation = value.translation.width
+                if drawerOffset == 0 {
+                    guard value.startLocation.x < 36 else { return }
+                    drawerOffset = min(max(0, translation), drawerWidth)
+                } else {
+                    drawerOffset = min(max(0, drawerWidth + translation), drawerWidth)
+                }
             }
-            _ = try await jobManager.startJob(mediaURL: movie.url, llamaState: llamaState)
-        } catch {
-            videoImportError = error.localizedDescription
-            jobManager.clearFailure()
+            .onEnded { value in
+                let velocity = value.predictedEndTranslation.width - value.translation.width
+                withAnimation(.easeOut(duration: 0.22)) {
+                    if velocity > 90 || (drawerOffset > drawerWidth * 0.5 && velocity > -90) {
+                        drawerOffset = drawerWidth
+                    } else {
+                        drawerOffset = 0
+                    }
+                }
+            }
+    }
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        if llamaState.isGenerating && !llamaState.currentResponse.isEmpty {
+            proxy.scrollTo("streaming", anchor: .bottom)
+        } else if let last = llamaState.messages.last {
+            proxy.scrollTo(last.id, anchor: .bottom)
         }
     }
 
@@ -357,25 +291,8 @@ struct ContentView: View {
     private func submitMessage() async {
         guard !llamaState.isGenerating else { return }
 
-        if llamaState.modelSuspendedForSpeech {
-            voiceErrorMessage = String(localized: "Model is reloading after transcription. Wait a moment.")
-            return
-        }
-
-        if voiceSession.isListening {
-            let spoken = await voiceSession.stopListening()
-            if !spoken.isEmpty {
-                inputText = spoken
-            }
-        }
-
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else {
-            voiceErrorMessage = String(localized: "No speech detected. Try again.")
-            return
-        }
-
-        voiceErrorMessage = nil
+        guard !text.isEmpty else { return }
 
         if llamaState.downloadedModels.isEmpty {
             showManageModels = true
@@ -383,61 +300,92 @@ struct ContentView: View {
         }
 
         if !llamaState.isModelLoaded {
-            let loaded = await llamaState.ensureModelLoaded()
-            if !loaded {
-                voiceErrorMessage = llamaState.modelLoadError ?? String(localized: "Could not load model.")
+            guard await llamaState.ensureModelLoaded() else {
+                showManageModels = true
                 return
             }
         }
 
-        let messageToSend = text
         inputText = ""
-        await llamaState.complete(text: messageToSend)
+        await llamaState.complete(text: text)
     }
 
-    private func stopGeneration() {
-        Task {
-            await llamaState.stop()
-        }
-    }
-
-    private func startVoiceInput() async {
-        guard !voiceSession.isListening else { return }
-        if llamaState.speechSynthesizer.isSpeaking {
-            llamaState.speechSynthesizer.stop()
-        }
-        guard !llamaState.modelSuspendedForSpeech else { return }
-
-        isFocused = false
-        voiceErrorMessage = nil
-        do {
-            try await voiceSession.startListening()
-        } catch {
-            voiceErrorMessage = error.localizedDescription
-        }
-    }
-
-    private func handleVoiceToggle() async {
-        if llamaState.speechSynthesizer.isSpeaking {
-            llamaState.speechSynthesizer.stop()
-            return
-        }
-        if llamaState.modelSuspendedForSpeech { return }
-
-        if voiceSession.isListening {
-            let spoken = await voiceSession.stopListening()
-            if !spoken.isEmpty {
-                inputText = spoken
+    private func handleDocumentImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            do {
+                let document = try DocumentContextService.load(from: url)
+                llamaState.attachDocument(document)
+            } catch {
+                llamaState.documentImportError = error.localizedDescription
+                llamaState.modelLoadError = error.localizedDescription
             }
-            await submitMessage()
-            return
+
+        case .failure(let error):
+            llamaState.documentImportError = error.localizedDescription
+            llamaState.modelLoadError = error.localizedDescription
         }
-        await startVoiceInput()
     }
 }
 
-struct ContentView_Previews: PreviewProvider {
-    static var previews: some View {
-        ContentView()
+private struct DocumentAttachmentChip: View {
+    let document: AttachedDocument
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "doc.text.fill")
+                .foregroundStyle(MercanTheme.coral)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(document.name)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                Text("\(document.kind) • \(document.characterCount.formatted()) characters")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(10)
+        .background(MercanTheme.coral.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
+}
+
+private struct ModelErrorCard: View {
+    let message: String
+    let onModels: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Model needs attention")
+                    .font(.subheadline.weight(.semibold))
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Open Models", action: onModels)
+                    .font(.caption.weight(.semibold))
+            }
+            Spacer()
+        }
+        .padding(12)
+        .background(Color.orange.opacity(0.10))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+#Preview {
+    ContentView()
 }

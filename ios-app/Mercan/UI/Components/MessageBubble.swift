@@ -1,38 +1,56 @@
 import SwiftUI
+import UIKit
 
 struct MessageBubble: View {
     let message: ChatMessage
-    let isStreaming: Bool
-    let streamingContent: String
-
-    init(message: ChatMessage, isStreaming: Bool = false, streamingContent: String = "") {
-        self.message = message
-        self.isStreaming = isStreaming
-        self.streamingContent = streamingContent
-    }
+    var isLastAssistant = false
+    var onRegenerate: (() -> Void)?
 
     var body: some View {
-        HStack {
-            if message.isUser {
-                Spacer()
-                Text(isStreaming ? streamingContent : message.displayContent)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .background(Color(.systemGray5))
-                    .foregroundColor(.primary)
-                    .clipShape(
-                        UnevenRoundedRectangle(
-                            topLeadingRadius: 20,
-                            bottomLeadingRadius: 20,
-                            bottomTrailingRadius: 4,
-                            topTrailingRadius: 20
+        VStack(alignment: message.isUser ? .trailing : .leading, spacing: 7) {
+            HStack {
+                if message.isUser { Spacer(minLength: 44) }
+
+                if message.isUser {
+                    Text(message.displayContent)
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 15)
+                        .padding(.vertical, 11)
+                        .background(MercanTheme.coral.opacity(0.11))
+                        .clipShape(
+                            UnevenRoundedRectangle(
+                                topLeadingRadius: 18,
+                                bottomLeadingRadius: 18,
+                                bottomTrailingRadius: 4,
+                                topTrailingRadius: 18
+                            )
                         )
-                    )
-                    .frame(maxWidth: 280, alignment: .trailing)
-            } else {
-                MarkdownText(text: isStreaming ? streamingContent : message.displayContent, isStreaming: isStreaming)
-                    .foregroundColor(.primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    MarkdownText(text: message.displayContent, isStreaming: false)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                if !message.isUser { Spacer(minLength: 8) }
+            }
+
+            if !message.isUser {
+                HStack(spacing: 14) {
+                    Button {
+                        UIPasteboard.general.string = message.displayContent
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+
+                    if isLastAssistant, let onRegenerate {
+                        Button(action: onRegenerate) {
+                            Label("Regenerate", systemImage: "arrow.clockwise")
+                        }
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .buttonStyle(.plain)
             }
         }
     }
@@ -42,16 +60,10 @@ struct StreamingBubble: View {
     let content: String
 
     var body: some View {
-        HStack {
-            if content.isEmpty {
-                Text(" ")
-                    .foregroundColor(.primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                MarkdownText(text: content, isStreaming: true)
-                    .foregroundColor(.primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+        HStack(alignment: .top, spacing: 8) {
+            MercanMark(size: 20)
+            MarkdownText(text: content.isEmpty ? " " : content, isStreaming: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
@@ -61,16 +73,17 @@ struct ThinkingIndicator: View {
     let timer = Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 8) {
+            MercanMark(size: 20)
             Text("Thinking")
-                .foregroundColor(.secondary)
+                .foregroundStyle(.secondary)
                 .font(.subheadline)
             HStack(spacing: 3) {
                 ForEach(0..<3) { index in
                     Circle()
-                        .fill(Color.secondary)
+                        .fill(MercanTheme.coral)
                         .frame(width: 5, height: 5)
-                        .opacity(index <= dotCount ? 1.0 : 0.3)
+                        .opacity(index <= dotCount ? 1 : 0.25)
                 }
             }
         }

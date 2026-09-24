@@ -270,7 +270,10 @@ actor MercanRuntimeContext {
         }
 
         let eos = mercan_eos_token(model)
-        if nextToken == eos {
+        // SFT learns 32001 (<|im_end|>) as the normal assistant-message
+        // terminator. EOS=2 is only the conversation/document terminator.
+        // Stop on the structural chat boundary *before* decoding it to text.
+        if nextToken == eos || nextToken == 32001 || nextToken == 32000 {
             is_done = true
             let tail = String(cString: temporaryInvalidBytes + [0])
             temporaryInvalidBytes.removeAll(keepingCapacity: true)
@@ -312,15 +315,29 @@ actor MercanRuntimeContext {
         return piece
     }
 
+    private func canonicalChatRole(_ role: String) -> String {
+        switch role.lowercased() {
+        case "system", "sistem":
+            return "sistem"
+        case "user", "kullanici", "kullanıcı":
+            return "kullanici"
+        case "assistant", "asistan":
+            return "asistan"
+        default:
+            return role
+        }
+    }
+
     func apply_chat_template(
         messages: [(role: String, content: String)],
         enableThinking: Bool = false
     ) -> String {
         var result = ""
         for message in messages {
-            result += "<|im_start|>\(message.role)\n\(message.content)<|im_end|>\n"
+            let role = canonicalChatRole(message.role)
+            result += "<|im_start|>\(role)\n\(message.content)<|im_end|>\n"
         }
-        result += "<|im_start|>assistant\n"
+        result += "<|im_start|>asistan\n"
         return result
     }
 

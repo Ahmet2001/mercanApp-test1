@@ -201,7 +201,10 @@ static std::string generate(mercan_model * model, const run_options & opt, const
             mercan_context_free(ctx);
             die("sampling failed: " + err);
         }
-        if (next == eos) break;
+        // SFT uses 32001 (<|im_end|>) as the normal assistant-message
+        // terminator. EOS=2 remains a conversation/document boundary.
+        // Stop on structural IDs before they are converted back to text.
+        if (next == eos || next == 32001 || next == 32000) break;
         const std::string piece = token_piece(model, next);
         text += piece;
 
@@ -316,7 +319,7 @@ static int command_run(int argc, char ** argv) {
     if (!model) die(std::string("model load failed: ") + mercan_last_error());
 
     if (!opt.prompt.empty()) {
-        const std::string formatted = "<|im_start|>user\n" + opt.prompt + "<|im_end|>\n<|im_start|>assistant\n";
+        const std::string formatted = "<|im_start|>kullanici\n" + opt.prompt + "<|im_end|>\n<|im_start|>asistan\n";
         std::cout << generate(model, opt, formatted) << "\n";
     } else {
         std::cout << "Mercan ready. Type /exit to quit.\n\n";
@@ -327,7 +330,7 @@ static int command_run(int argc, char ** argv) {
             if (!std::getline(std::cin, line)) break;
             if (line == "/exit" || line == "/quit") break;
             if (line.empty()) continue;
-            transcript += "<|im_start|>user\n" + line + "<|im_end|>\n<|im_start|>assistant\n";
+            transcript += "<|im_start|>kullanici\n" + line + "<|im_end|>\n<|im_start|>asistan\n";
             const std::string answer = generate(model, opt, transcript);
             std::cout << answer << "\n\n";
             transcript += answer + "<|im_end|>\n";

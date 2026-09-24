@@ -1,0 +1,72 @@
+name: Publish Mercan Identity E2 Q4
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - refactor/libmercan-ios-runtime
+    paths:
+      - '.github/workflows/publish-identity-e2-q4.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    env:
+      TAG: mercan-0.8b-identity-e2-q4-20260924
+      ASSET: Mercan-0.8B-Identity-E2-Q4_K_M.mercan
+      HF_MODEL_URL: https://huggingface.co/MercanAI/Mercan-0.8B-SFT/resolve/main/model.mercan?download=true
+
+    steps:
+      - name: Download Q4 Mercan artifact
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-delay 3 \
+            -o "$ASSET" "$HF_MODEL_URL"
+          ls -lh "$ASSET"
+
+      - name: Verify format and checkpoint provenance
+        run: |
+          set -euo pipefail
+          test "$(head -c 4 "$ASSET")" = "GGUF"
+          grep -aFq "epoch_02_step_00046.pt" "$ASSET" || {
+            echo "::error::Downloaded model is not the verified identity E2 checkpoint epoch_02_step_00046.pt"
+            exit 42
+          }
+          test "$(stat -c %s "$ASSET")" -gt 100000000
+          sha256sum "$ASSET" > "$ASSET.sha256"
+          cat "$ASSET.sha256"
+
+      - name: Write provenance
+        run: |
+          cat > PROVENANCE.txt <<EOF
+          Model: Mercan 0.8B Identity E2
+          Source checkpoint: epoch_02_step_00046.pt
+          Quantization: Q4_K_M
+          Container: Mercan v1 / GGUF v3
+          Source artifact: MercanAI/Mercan-0.8B-SFT:model.mercan
+          Runtime branch: refactor/libmercan-ios-runtime
+          Stop protocol: 32001=<|im_end|>, 2=<EOS>, 32000=<|im_start|>
+          Chat roles: sistem, kullanici, asistan
+          EOF
+
+      - name: Publish GitHub Release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" \
+              "$ASSET" "$ASSET.sha256" PROVENANCE.txt \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" \
+              "$ASSET" "$ASSET.sha256" PROVENANCE.txt \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Mercan 0.8B Identity E2 Q4_K_M" \
+              --notes "Q4_K_M Mercan deployment artifact from epoch_02_step_00046.pt. Includes runtime fixes for token-level chat stopping and Turkish SFT role serialization."
+          fi

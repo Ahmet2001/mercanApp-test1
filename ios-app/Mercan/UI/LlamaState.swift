@@ -307,6 +307,33 @@ class LlamaState: ObservableObject {
         didSet { UserDefaults.standard.set(speakRepliesEnabled, forKey: "speakRepliesEnabled") }
     }
 
+    @Published var temperature: Double = 0.7 {
+        didSet { UserDefaults.standard.set(temperature, forKey: "temperature") }
+    }
+    @Published var topP: Double = 0.95 {
+        didSet { UserDefaults.standard.set(topP, forKey: "topP") }
+    }
+    @Published var topK: Int = 40 {
+        didSet { UserDefaults.standard.set(topK, forKey: "topK") }
+    }
+    @Published var minP: Double = 0.05 {
+        didSet { UserDefaults.standard.set(minP, forKey: "minP") }
+    }
+    @Published var repeatPenalty: Double = 1.10 {
+        didSet { UserDefaults.standard.set(repeatPenalty, forKey: "repeatPenalty") }
+    }
+
+    private var samplingConfiguration: SamplingConfiguration {
+        SamplingConfiguration(
+            temperature: Float(temperature),
+            topK: Int32(topK),
+            topP: Float(topP),
+            minP: Float(minP),
+            repeatPenalty: Float(repeatPenalty),
+            repeatLastN: 64
+        )
+    }
+
     let speechSynthesizer = SpeechSynthesizerService()
     private var suspendedModelURL: URL?
 
@@ -462,10 +489,16 @@ class LlamaState: ObservableObject {
 
     var isModelLoaded: Bool { inferenceEngine != nil }
 
-    private func ggufFilesInDocuments() -> [URL] {
+    private func modelFilesInDocuments() -> [URL] {
         let documents = getDocumentsDirectory()
         let files = (try? FileManager.default.contentsOfDirectory(at: documents, includingPropertiesForKeys: nil)) ?? []
-        return files.filter { $0.pathExtension.lowercased() == "gguf" }
+        return files.filter { url in
+            let ext = url.pathExtension.lowercased()
+            if ext == "mercan" { return true }
+            // Compatibility with the previous iOS build, which downloaded the
+            // Mercan v1 GGUF container using a .gguf filename.
+            return ext == "gguf" && url.lastPathComponent == "Mercan-0.8B-SFT.gguf"
+        }
     }
 
     private func fileSize(at url: URL) -> Int64 {
@@ -473,11 +506,11 @@ class LlamaState: ObservableObject {
     }
 
     private func resolveModelFileURL() -> URL? {
-        let ggufs = ggufFilesInDocuments()
-        guard !ggufs.isEmpty else { return nil }
+        let models = modelFilesInDocuments()
+        guard !models.isEmpty else { return nil }
 
         #if targetEnvironment(simulator)
-        let loadable = ggufs.filter { fileSize(at: $0) <= Self.simulatorMaxModelBytes }
+        let loadable = models.filter { fileSize(at: $0) <= Self.simulatorMaxModelBytes }
         if let smallest = loadable.min(by: { fileSize(at: $0) < fileSize(at: $1) }) {
             return smallest
         }
@@ -485,10 +518,10 @@ class LlamaState: ObservableObject {
         #else
 
         if !currentModelName.isEmpty,
-           let match = ggufs.first(where: { $0.deletingPathExtension().lastPathComponent == currentModelName }) {
+           let match = models.first(where: { $0.deletingPathExtension().lastPathComponent == currentModelName }) {
             return match
         }
-        return ggufs.first
+        return models.first
         #endif
     }
 
@@ -500,11 +533,10 @@ class LlamaState: ObservableObject {
             }
             return
         }
-        // Only oversized models on disk (e.g. Gemma 4) — fetch a Simulator-friendly default.
-        modelLoadError = String(localized: "Gemma 4 is too large for Simulator. Downloading LFM2.5 (1.2 GB)…")
-        let lfm = Self.lfmSimulatorModel
-        if !FileManager.default.fileExists(atPath: getDocumentsDirectory().appendingPathComponent(lfm.filename).path) {
-            downloadModel(lfm)
+        modelLoadError = String(localized: "No loadable Mercan model found. Downloading the default Mercan model…")
+        let model = Self.defaultModel
+        if !FileManager.default.fileExists(atPath: getDocumentsDirectory().appendingPathComponent(model.filename).path) {
+            downloadModel(model)
         }
     }
 
@@ -560,7 +592,7 @@ class LlamaState: ObservableObject {
     #endif
 
     private func initializeEngine(at modelURL: URL) async throws {
-        let engine = LlamaCppEngine()
+        let engine = MercanRuntimeEngine()
         inferenceEngine = engine
         do {
             try await engine.initialize(modelPath: modelURL.path(), contextSize: contextSize) { [weak self] progress in
@@ -568,6 +600,7 @@ class LlamaState: ObservableObject {
                     self?.modelLoadProgress = Double(progress)
                 }
             }
+            await engine.setSampling(samplingConfiguration)
         } catch {
             inferenceEngine = nil
             throw error
@@ -579,7 +612,7 @@ class LlamaState: ObservableObject {
         )
     }
 
-    /// Loads the on-disk GGUF if the engine was unloaded (e.g. after video transcription).
+    /// Loads the on-disk Mercan model if the runtime was unloaded (e.g. after video transcription).
     func ensureModelLoaded() async -> Bool {
         if inferenceEngine != nil { return true }
 
@@ -590,7 +623,7 @@ class LlamaState: ObservableObject {
 
         guard let modelURL = resolveModelFileURL() else {
             #if targetEnvironment(simulator)
-            modelLoadError = String(localized: "No Simulator-sized model found. Open Manage Models and download LFM2.5 (1.2 GB), or wait for the automatic download.")
+            modelLoadError = String(localized: "No Mercan model found. Open Manage Models or wait for the automatic download.")
             Task { await bootstrapSimulatorModelIfNeeded() }
             #else
             modelLoadError = String(localized: "No model file found on device.")
@@ -624,6 +657,21 @@ class LlamaState: ObservableObject {
     init() {
         self.systemPrompt = UserDefaults.standard.string(forKey: "systemPrompt") ?? ""
         self.speakRepliesEnabled = UserDefaults.standard.bool(forKey: "speakRepliesEnabled")
+        if UserDefaults.standard.object(forKey: "temperature") != nil {
+            self.temperature = UserDefaults.standard.double(forKey: "temperature")
+        }
+        if UserDefaults.standard.object(forKey: "topP") != nil {
+            self.topP = UserDefaults.standard.double(forKey: "topP")
+        }
+        if UserDefaults.standard.object(forKey: "topK") != nil {
+            self.topK = max(1, UserDefaults.standard.integer(forKey: "topK"))
+        }
+        if UserDefaults.standard.object(forKey: "minP") != nil {
+            self.minP = UserDefaults.standard.double(forKey: "minP")
+        }
+        if UserDefaults.standard.object(forKey: "repeatPenalty") != nil {
+            self.repeatPenalty = UserDefaults.standard.double(forKey: "repeatPenalty")
+        }
         let saved = UserDefaults.standard.integer(forKey: "contextSize")
         #if targetEnvironment(simulator)
         self.contextSize = saved > 0 ? UInt32(min(saved, 2048)) : 2048
@@ -667,7 +715,10 @@ class LlamaState: ObservableObject {
         do {
             let documentsURL = getDocumentsDirectory()
             let allURLs = try FileManager.default.contentsOfDirectory(at: documentsURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants])
-            let modelURLs = allURLs.filter { $0.pathExtension.lowercased() == "gguf" }
+            let modelURLs = allURLs.filter { url in
+                let ext = url.pathExtension.lowercased()
+                return ext == "mercan" || (ext == "gguf" && url.lastPathComponent == "Mercan-0.8B-SFT.gguf")
+            }
             for modelURL in modelURLs {
                 // Skip files under 1MB — likely corrupt or partial
                 let attrs = try? FileManager.default.attributesOfItem(atPath: modelURL.path)
@@ -818,51 +869,19 @@ class LlamaState: ObservableObject {
     static let defaultModel = Model(
         name: "Mercan 0.8B SFT Q4_K_M (482 MiB)",
         url: "https://huggingface.co/MercanAI/Mercan-0.8B-SFT/resolve/main/model.mercan?download=true",
-        filename: "Mercan-0.8B-SFT.gguf",
+        filename: "Mercan-0.8B-SFT.mercan",
         status: "download",
         released: catalogDate(2026, 9, 11))
 
-    static let lfmSimulatorModel = Model(
-        name: "LFM2.5-1.2B Instruct Q8 (1.2 GiB)",
-        url: "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF/resolve/main/LFM2.5-1.2B-Instruct-Q8_0.gguf?download=true",
-        filename: "LFM2.5-1.2B-Instruct-Q8_0.gguf",
-        status: "download",
-        released: catalogDate(2026, 1, 5))
-
     static var defaultModelForPlatform: Model {
-        #if targetEnvironment(simulator)
-        return lfmSimulatorModel
-        #else
-        return defaultModel
-        #endif
+        defaultModel
     }
 
+    // libmercan v0.1.2 intentionally accepts Mercan Format v1 artifacts.
+    // Generic third-party GGUF entries stay out of the iOS catalog until they
+    // are exported as .mercan or supported through a Mercan architecture provider.
     private static let allDownloadableModels: [Model] = [
-        LlamaState.defaultModel,
-
-        Model(name: "LFM2.5-1.2B Instruct Q8 (1.2 GiB)",
-              url: "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF/resolve/main/LFM2.5-1.2B-Instruct-Q8_0.gguf?download=true",
-              filename: "LFM2.5-1.2B-Instruct-Q8_0.gguf",
-              status: "download",
-              released: catalogDate(2026, 1, 5)),
-
-        Model(name: "Ministral-3B Instruct Q4 (2.0 GiB)",
-              url: "https://huggingface.co/mistralai/Ministral-3-3B-Instruct-2512-GGUF/resolve/main/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf?download=true",
-              filename: "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
-              status: "download",
-              released: catalogDate(2025, 12, 2)),
-
-        Model(name: "Gemma 4 E2B Instruct Q4 (2.9 GiB)",
-              url: "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf?download=true",
-              filename: "gemma-4-E2B-it-Q4_K_M.gguf",
-              status: "download",
-              released: catalogDate(2026, 4, 2)),
-
-        Model(name: "Gemma 4 E2B Instruct Q8 (4.6 GiB)",
-              url: "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q8_0.gguf?download=true",
-              filename: "gemma-4-E2B-it-Q8_0.gguf",
-              status: "download",
-              released: catalogDate(2026, 4, 2))
+        LlamaState.defaultModel
     ]
 
     private var downloadableModels: [Model] {
@@ -1191,10 +1210,11 @@ class LlamaState: ObservableObject {
                 return
             }
 
+            await inferenceEngine.setSampling(samplingConfiguration)
             do {
                 try await inferenceEngine.generateNext(messages: chatMessages)
             } catch {
-                guard case LlamaError.decodeFailed = error else { throw error }
+                guard case LlamaError.decodeFailed(_) = error else { throw error }
                 await inferenceEngine.clear()
                 try await inferenceEngine.generateNext(messages: chatMessages)
             }
@@ -1231,8 +1251,8 @@ class LlamaState: ObservableObject {
                                 displayPartsSinceLastFlush = 0
                                 // Read entropy for confidence indicator
                                 var confidence: Float = 1.0
-                                if let cppEngine = inferenceEngine as? LlamaCppEngine {
-                                    let avg = await cppEngine.averageEntropy
+                                if let mercanEngine = inferenceEngine as? MercanRuntimeEngine {
+                                    let avg = await mercanEngine.averageEntropy
                                     // Map entropy to 0-1 confidence (lower entropy = higher confidence)
                                     // Typical entropy range: 0-12 bits for 32K vocab
                                     confidence = max(0, min(1, 1.0 - (avg / 12.0)))
@@ -1357,12 +1377,7 @@ class LlamaState: ObservableObject {
     }
 
     let modelRequirements: [String: Double] = [
-        "Mercan 0.8B SFT Q4_K_M (482 MiB)": 1.2,
-        "LFM2.5-1.2B Instruct Q8 (1.2 GiB)": 1.3,
-        "Ministral-3B Instruct Q4 (2.0 GiB)": 2.2,
-        "Gemma 4 E2B Instruct Q4 QAT (2.6 GiB)": 2.7,
-        "Gemma 4 E2B Instruct Q4 (2.9 GiB)": 3.0,
-        "Gemma 4 E2B Instruct Q8 (4.6 GiB)": 5.0
+        "Mercan 0.8B SFT Q4_K_M (482 MiB)": 1.2
     ]
 
     func canRunModel(_ modelName: String) -> Bool {
@@ -1390,6 +1405,7 @@ class LlamaState: ObservableObject {
         do {
             await inferenceEngine.clearGenerationState()
             await inferenceEngine.resume()
+            await inferenceEngine.setSampling(samplingConfiguration)
             try await inferenceEngine.generateNext(messages: titleMessages)
 
             let titleFilter = SpecialTokenFilter()

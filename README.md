@@ -148,6 +148,8 @@ spec/MERCAN_FORMAT_V1.md             model format contract
 
 ## Export the final Mercan model
 
+For a complete compatibility check and step-by-step `.pt -> .mercan` guide, see [docs/PT_TO_MERCAN.md](docs/PT_TO_MERCAN.md).
+
 On a machine with the final checkpoint and PyTorch:
 
 ```bash

@@ -6,12 +6,17 @@
 #include "llama.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <limits>
+#include <random>
 #include <string>
 #include <thread>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 struct mercan_model {
@@ -28,6 +33,10 @@ struct mercan_context {
     llama_context * impl = nullptr;
     mercan_generic_context * generic = nullptr;
     mercan_model * model = nullptr;
+    std::vector<mercan_token> token_history;
+    std::mt19937 rng;
+    bool rng_seeded = false;
+    uint32_t rng_seed_value = MERCAN_DEFAULT_SEED;
 };
 
 static thread_local std::string g_last_error;
@@ -80,6 +89,18 @@ mercan_context_params mercan_context_default_params(void) {
     const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
     p.n_threads = static_cast<int32_t>(hw);
     p.n_threads_batch = static_cast<int32_t>(hw);
+    return p;
+}
+
+mercan_sampler_params mercan_sampler_default_params(void) {
+    mercan_sampler_params p{};
+    p.temperature = 0.7f;
+    p.top_k = 40;
+    p.top_p = 0.95f;
+    p.min_p = 0.05f;
+    p.repeat_penalty = 1.10f;
+    p.repeat_last_n = 64;
+    p.seed = MERCAN_DEFAULT_SEED;
     return p;
 }
 
@@ -273,6 +294,60 @@ void mercan_context_free(mercan_context * ctx) {
     delete ctx;
 }
 
+int32_t mercan_context_reset(mercan_context * ctx, bool clear_data) {
+    g_last_error.clear();
+    if (!ctx || (!ctx->impl && !ctx->generic)) {
+        set_error("invalid context");
+        return -1;
+    }
+    if (ctx->generic) {
+        std::string e;
+        const int rc = mercan_generic_context_reset(ctx->generic, clear_data, e);
+        if (rc != 0) set_error(e);
+        if (rc != 0) return rc;
+    } else {
+        llama_memory_t mem = llama_get_memory(ctx->impl);
+        if (!mem) {
+            set_error("backend context does not expose sequence memory");
+            return -1;
+        }
+        llama_memory_clear(mem, clear_data);
+    }
+    ctx->token_history.clear();
+    ctx->rng_seeded = false;
+    return 0;
+}
+
+int32_t mercan_context_rewind(mercan_context * ctx, uint32_t token_count) {
+    g_last_error.clear();
+    if (!ctx || (!ctx->impl && !ctx->generic)) {
+        set_error("invalid context");
+        return -1;
+    }
+    if (token_count > ctx->token_history.size()) {
+        set_error("rewind position exceeds decoded token history");
+        return -1;
+    }
+    if (ctx->generic) {
+        std::string e;
+        const int rc = mercan_generic_context_rewind(ctx->generic, token_count, e);
+        if (rc != 0) set_error(e);
+        if (rc != 0) return rc;
+    } else {
+        llama_memory_t mem = llama_get_memory(ctx->impl);
+        if (!mem) {
+            set_error("backend context does not expose sequence memory");
+            return -1;
+        }
+        if (!llama_memory_seq_rm(mem, -1, static_cast<llama_pos>(token_count), -1)) {
+            set_error("backend memory cannot partially rewind this sequence");
+            return -1;
+        }
+    }
+    ctx->token_history.resize(token_count);
+    return 0;
+}
+
 int32_t mercan_tokenize(
     mercan_model * model,
     const char * text,
@@ -311,15 +386,128 @@ int32_t mercan_decode(mercan_context * ctx, const mercan_token * tokens, int32_t
         set_error("invalid decode arguments");
         return -1;
     }
+
+    int rc = 0;
     if (ctx->generic) {
-        std::string e; const int rc = mercan_generic_decode(ctx->generic, tokens, n_tokens, e); if (rc != 0) set_error(e); return rc;
+        std::string e;
+        rc = mercan_generic_decode(ctx->generic, tokens, n_tokens, e);
+        if (rc != 0) set_error(e);
+    } else {
+        llama_batch batch = llama_batch_get_one(
+            const_cast<llama_token *>(reinterpret_cast<const llama_token *>(tokens)),
+            n_tokens);
+        rc = llama_decode(ctx->impl, batch);
+        if (rc != 0) set_error("llama_decode failed with code " + std::to_string(rc));
     }
-    llama_batch batch = llama_batch_get_one(
-        const_cast<llama_token *>(reinterpret_cast<const llama_token *>(tokens)),
-        n_tokens);
-    const int rc = llama_decode(ctx->impl, batch);
-    if (rc != 0) set_error("llama_decode failed with code " + std::to_string(rc));
+
+    if (rc == 0) {
+        ctx->token_history.insert(ctx->token_history.end(), tokens, tokens + n_tokens);
+    }
     return rc;
+}
+
+mercan_token mercan_sample_next(mercan_context * ctx, mercan_sampler_params params) {
+    g_last_error.clear();
+    if (!ctx || !ctx->model) {
+        set_error("invalid sampler context");
+        return -1;
+    }
+
+    const float * logits = mercan_logits(ctx);
+    const int32_t n_vocab = mercan_vocab_size(ctx->model);
+    if (!logits || n_vocab <= 0) {
+        set_error("no logits available for sampling");
+        return -1;
+    }
+
+    struct candidate {
+        mercan_token id;
+        float logit;
+        double weight;
+    };
+
+    std::unordered_set<mercan_token> repeated;
+    if (params.repeat_penalty > 0.0f && params.repeat_penalty != 1.0f && params.repeat_last_n != 0) {
+        const size_t history_size = ctx->token_history.size();
+        const size_t window = params.repeat_last_n < 0
+            ? history_size
+            : std::min(history_size, static_cast<size_t>(params.repeat_last_n));
+        const size_t begin = history_size - window;
+        for (size_t i = begin; i < history_size; ++i) repeated.insert(ctx->token_history[i]);
+    }
+
+    std::vector<candidate> candidates;
+    candidates.reserve(static_cast<size_t>(n_vocab));
+    for (int32_t i = 0; i < n_vocab; ++i) {
+        float score = logits[i];
+        if (repeated.find(i) != repeated.end() && params.repeat_penalty > 0.0f && params.repeat_penalty != 1.0f) {
+            score = score <= 0.0f ? score * params.repeat_penalty : score / params.repeat_penalty;
+        }
+        candidates.push_back({i, score, 0.0});
+    }
+
+    auto by_logit = [](const candidate & a, const candidate & b) { return a.logit > b.logit; };
+
+    if (params.temperature <= 0.0f) {
+        return std::max_element(
+            candidates.begin(),
+            candidates.end(),
+            [](const candidate & a, const candidate & b) { return a.logit < b.logit; }
+        )->id;
+    }
+
+    const int32_t requested_top_k = params.top_k <= 0 ? n_vocab : params.top_k;
+    const size_t top_k = static_cast<size_t>(std::max<int32_t>(1, std::min<int32_t>(requested_top_k, n_vocab)));
+    std::partial_sort(candidates.begin(), candidates.begin() + top_k, candidates.end(), by_logit);
+    candidates.resize(top_k);
+
+    const float max_logit = candidates.front().logit;
+    const double inv_temp = 1.0 / static_cast<double>(std::max(params.temperature, 1e-6f));
+    for (auto & c : candidates) {
+        c.weight = std::exp((static_cast<double>(c.logit) - max_logit) * inv_temp);
+    }
+
+    if (params.min_p > 0.0f && params.min_p < 1.0f && candidates.size() > 1) {
+        const double threshold = static_cast<double>(params.min_p) * candidates.front().weight;
+        size_t keep = 1;
+        while (keep < candidates.size() && candidates[keep].weight >= threshold) ++keep;
+        candidates.resize(keep);
+    }
+
+    if (params.top_p > 0.0f && params.top_p < 1.0f && candidates.size() > 1) {
+        double total = 0.0;
+        for (const auto & c : candidates) total += c.weight;
+        if (total > 0.0 && std::isfinite(total)) {
+            double cumulative = 0.0;
+            size_t keep = 0;
+            for (; keep < candidates.size(); ++keep) {
+                cumulative += candidates[keep].weight / total;
+                if (cumulative >= params.top_p) {
+                    ++keep;
+                    break;
+                }
+            }
+            candidates.resize(std::max<size_t>(1, std::min(keep, candidates.size())));
+        }
+    }
+
+    if (!ctx->rng_seeded || ctx->rng_seed_value != params.seed) {
+        if (params.seed == MERCAN_DEFAULT_SEED) {
+            std::random_device rd;
+            std::seed_seq seq{rd(), rd(), rd(), rd()};
+            ctx->rng.seed(seq);
+        } else {
+            ctx->rng.seed(params.seed);
+        }
+        ctx->rng_seed_value = params.seed;
+        ctx->rng_seeded = true;
+    }
+
+    std::vector<double> weights;
+    weights.reserve(candidates.size());
+    for (const auto & c : candidates) weights.push_back(c.weight);
+    std::discrete_distribution<size_t> distribution(weights.begin(), weights.end());
+    return candidates[distribution(ctx->rng)].id;
 }
 
 const float * mercan_logits(mercan_context * ctx) {

@@ -1,5 +1,9 @@
 name: Mercan iOS
 
+concurrency:
+  group: mercan-ios-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   workflow_dispatch:
   push:
@@ -11,7 +15,10 @@ on:
     paths:
       - '.github/workflows/nedolm-ios.yml'
       - 'ios-app/**'
-      - 'scripts/build-nedolm-llama-ios.sh'
+      - 'scripts/build-libmercan-ios.sh'
+      - 'CMakeLists.txt'
+      - 'core/**'
+      - 'architectures/**'
       - 'runtime/**'
 
 permissions:
@@ -19,12 +26,17 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 90
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
 
       - name: Prepare Mercan iOS frameworks
         run: |
@@ -85,6 +97,5 @@ jobs:
           issuer-id: ${{ vars.APPSTORE_ISSUER_ID }}
           api-key-id: ${{ vars.APPSTORE_API_KEY_ID }}
           api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
-          uses-non-exempt-encryption: 'false'
           wait-for-processing: 'true'
-          backend: AppStoreAPI
+          backend: altool

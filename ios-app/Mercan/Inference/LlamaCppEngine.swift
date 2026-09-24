@@ -1,60 +1,65 @@
 import Foundation
 
-actor LlamaCppEngine: InferenceEngine {
-    private var llamaContext: LlamaContext?
+actor MercanRuntimeEngine: InferenceEngine {
+    private var runtimeContext: MercanRuntimeContext?
+    private var samplingConfiguration = SamplingConfiguration.standard
     var isComplete: Bool = true
 
     init() {}
 
-    func initialize(modelPath: String, contextSize: UInt32, onProgress: (@Sendable (Float) -> Void)? = nil) async throws {
-        // print("LlamaCppEngine: Loading model from \(modelPath), context: \(contextSize)")
-        // Run blocking C model load off the cooperative thread pool
-        // to avoid starving the main actor and causing UI hangs
+    func initialize(
+        modelPath: String,
+        contextSize: UInt32,
+        onProgress: (@Sendable (Float) -> Void)? = nil
+    ) async throws {
         let context = try await Task.detached(priority: .userInitiated) {
-            try LlamaContext.create_context(path: modelPath, contextSize: contextSize, onProgress: onProgress)
+            try MercanRuntimeContext.create_context(
+                path: modelPath,
+                contextSize: contextSize,
+                onProgress: onProgress
+            )
         }.value
-        llamaContext = context
-        // print("LlamaCppEngine: Model loaded successfully")
+        runtimeContext = context
+        await context.setSampling(samplingConfiguration)
+    }
+
+    func setSampling(_ configuration: SamplingConfiguration) async {
+        samplingConfiguration = configuration
+        if let runtimeContext {
+            await runtimeContext.setSampling(configuration)
+        }
     }
 
     func generateNext(messages: [(role: String, content: String)]) async throws {
-        guard let context = llamaContext else {
-            throw NSError(domain: "LlamaCppEngine", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "Engine not initialized"
-            ])
+        guard let context = runtimeContext else {
+            throw NSError(
+                domain: "MercanRuntimeEngine",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "libmercan runtime is not initialized"]
+            )
         }
 
+        await context.setSampling(samplingConfiguration)
         let finalPrompt = await context.apply_chat_template(messages: messages)
-        // print("Formatted prompt:\n\(finalPrompt)")
-        do {
-            try await context.completion_init_with_cache(text: finalPrompt)
-        } catch {
-            await context.clear()
-            try await context.completion_init(text: finalPrompt)
-        }
+        try await context.completion_init_with_cache(text: finalPrompt)
         isComplete = false
     }
 
     func encodePrompt(messages: [(role: String, content: String)]) async throws {
-        guard let context = llamaContext else {
-            throw NSError(domain: "LlamaCppEngine", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "Engine not initialized"
-            ])
+        guard let context = runtimeContext else {
+            throw NSError(
+                domain: "MercanRuntimeEngine",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "libmercan runtime is not initialized"]
+            )
         }
         let finalPrompt = await context.apply_chat_template(messages: messages)
-        do {
-            try await context.completion_init_with_cache(text: finalPrompt)
-        } catch {
-            await context.clear()
-            try await context.completion_init(text: finalPrompt)
-        }
+        try await context.completion_init(text: finalPrompt)
         isComplete = true
     }
 
     func streamToken() async throws -> String? {
-        guard let context = llamaContext else {
-            return nil
-        }
+        guard let context = runtimeContext else { return nil }
 
         if await context.is_done {
             isComplete = true
@@ -62,17 +67,15 @@ actor LlamaCppEngine: InferenceEngine {
         }
 
         let token = try await context.completion_loop()
-
         if await context.is_done {
             isComplete = true
         }
-
         return token
     }
 
     func stop() async {
         isComplete = true
-        if let context = llamaContext {
+        if let context = runtimeContext {
             await context.clearGenerationState()
         }
     }
@@ -82,37 +85,38 @@ actor LlamaCppEngine: InferenceEngine {
     }
 
     func clear() async {
-        if let context = llamaContext {
+        if let context = runtimeContext {
             await context.clear()
         }
         isComplete = true
     }
 
     func modelInfo() -> String {
-        return "GGUF Model (llama.cpp)"
+        "Mercan Runtime (libmercan)"
     }
 
     func clearGenerationState() async {
-        if let context = llamaContext {
+        if let context = runtimeContext {
             await context.clearGenerationState()
         }
     }
 
     var currentEntropy: Float {
-        get async { await llamaContext?.currentEntropy ?? 0.0 }
+        get async { await runtimeContext?.currentEntropy ?? 0 }
     }
 
     var averageEntropy: Float {
-        get async { await llamaContext?.averageEntropy ?? 0.0 }
+        get async { await runtimeContext?.averageEntropy ?? 0 }
     }
 
     func countTokens(for messages: [(role: String, content: String)]) async -> Int {
-        guard let context = llamaContext else { return 0 }
+        guard let context = runtimeContext else { return 0 }
         let prompt = await context.apply_chat_template(messages: messages)
         return await context.countTokens(text: prompt)
     }
 
     func deinitialize() async {
-        llamaContext = nil
+        runtimeContext = nil
+        isComplete = true
     }
 }

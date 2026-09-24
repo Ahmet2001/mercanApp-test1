@@ -6,7 +6,7 @@ WORK="$ROOT/build/ios"
 DERIVED="$WORK/DerivedData-unsigned"
 OUT="$WORK/Mercan-iOS-unsigned.ipa"
 
-test -d "$APP_DIR/llama.xcframework" || { echo "Run ios-app/scripts/prepare-frameworks.sh first" >&2; exit 2; }
+test -d "$APP_DIR/MercanRuntime.xcframework" || { echo "Run ios-app/scripts/prepare-frameworks.sh first" >&2; exit 2; }
 test -d "$APP_DIR/whisper.xcframework" || { echo "Run ios-app/scripts/prepare-frameworks.sh first" >&2; exit 2; }
 
 rm -rf "$DERIVED" "$WORK/Payload" "$OUT"

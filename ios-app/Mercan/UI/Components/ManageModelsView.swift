@@ -29,6 +29,9 @@ struct ManageModelsView: View {
                 Section {
                     InputButton(llamaState: llamaState)
                         .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+
+                    LoadCustomButton(llamaState: llamaState)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                 }
 
                 // MARK: - Downloaded Models Section

@@ -10,8 +10,8 @@
 		5B6FDDAB2C1A6997B4549BBD /* whisper.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 9EBE689DB487DCCC4E1D8724 /* whisper.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		72BA6DB42D4AD42100D97817 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 72BA6DB32D4AD42100D97817 /* Metal.framework */; };
 		72BA6DB62D4AD42600D97817 /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 72BA6DB52D4AD42600D97817 /* Accelerate.framework */; };
-		72BA6DB72D4AD50000D97817 /* llama.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 72BA6DB82D4AD50000D97817 /* llama.xcframework */; };
-		72BA6DB92D4AD50000D97817 /* llama.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 72BA6DB82D4AD50000D97817 /* llama.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		72BA6DB72D4AD50000D97817 /* MercanRuntime.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 72BA6DB82D4AD50000D97817 /* MercanRuntime.xcframework */; };
+		72BA6DB92D4AD50000D97817 /* MercanRuntime.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 72BA6DB82D4AD50000D97817 /* MercanRuntime.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		B323D323981259EFA267C205 /* whisper.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9EBE689DB487DCCC4E1D8724 /* whisper.xcframework */; };
 /* End PBXBuildFile section */
 
@@ -22,7 +22,7 @@
 			dstPath = "";
 			dstSubfolderSpec = 10;
 			files = (
-				72BA6DB92D4AD50000D97817 /* llama.xcframework in Embed Frameworks */,
+				72BA6DB92D4AD50000D97817 /* MercanRuntime.xcframework in Embed Frameworks */,
 				5B6FDDAB2C1A6997B4549BBD /* whisper.xcframework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
@@ -34,7 +34,7 @@
 		72BA6D8B2D4AD2B000D97817 /* Mercan.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Mercan.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		72BA6DB32D4AD42100D97817 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
 		72BA6DB52D4AD42600D97817 /* Accelerate.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Accelerate.framework; path = System/Library/Frameworks/Accelerate.framework; sourceTree = SDKROOT; };
-		72BA6DB82D4AD50000D97817 /* llama.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = llama.xcframework; sourceTree = "<group>"; };
+		72BA6DB82D4AD50000D97817 /* MercanRuntime.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = MercanRuntime.xcframework; sourceTree = "<group>"; };
 		9EBE689DB487DCCC4E1D8724 /* whisper.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = whisper.xcframework; sourceTree = "<group>"; };
 		AFECFABEC2CC4C987C423416 /* models/whisper/ggml-small.en-q5_1.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; path = "models/whisper/ggml-small.en-q5_1.bin"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -70,7 +70,7 @@
 			files = (
 				72BA6DB62D4AD42600D97817 /* Accelerate.framework in Frameworks */,
 				72BA6DB42D4AD42100D97817 /* Metal.framework in Frameworks */,
-				72BA6DB72D4AD50000D97817 /* llama.xcframework in Frameworks */,
+				72BA6DB72D4AD50000D97817 /* MercanRuntime.xcframework in Frameworks */,
 				B323D323981259EFA267C205 /* whisper.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -81,7 +81,7 @@
 		72BA6D822D4AD2B000D97817 = {
 			isa = PBXGroup;
 			children = (
-				72BA6DB82D4AD50000D97817 /* llama.xcframework */,
+				72BA6DB82D4AD50000D97817 /* MercanRuntime.xcframework */,
 				9EBE689DB487DCCC4E1D8724 /* whisper.xcframework */,
 				AFECFABEC2CC4C987C423416 /* models/whisper/ggml-small.en-q5_1.bin */,
 				72BA6D8D2D4AD2B000D97817 /* Mercan */,
@@ -365,7 +365,7 @@
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.2;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -401,7 +401,7 @@
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.2;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

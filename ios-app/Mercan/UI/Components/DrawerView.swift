@@ -247,6 +247,54 @@ struct SettingsView: View {
                         .foregroundColor(.secondary)
                 }
 
+                // MARK: - Generation Section
+                Section {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Label("Temperature", systemImage: "thermometer.medium")
+                            Spacer()
+                            Text(llamaState.temperature, format: .number.precision(.fractionLength(2)))
+                                .foregroundColor(.secondary)
+                        }
+                        Slider(value: $llamaState.temperature, in: 0...1.5, step: 0.05)
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Top P")
+                            Spacer()
+                            Text(llamaState.topP, format: .number.precision(.fractionLength(2)))
+                                .foregroundColor(.secondary)
+                        }
+                        Slider(value: $llamaState.topP, in: 0.10...1.0, step: 0.05)
+                    }
+
+                    Stepper(value: $llamaState.topK, in: 1...100, step: 1) {
+                        HStack {
+                            Text("Top K")
+                            Spacer()
+                            Text("\(llamaState.topK)")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Repeat Penalty")
+                            Spacer()
+                            Text(llamaState.repeatPenalty, format: .number.precision(.fractionLength(2)))
+                                .foregroundColor(.secondary)
+                        }
+                        Slider(value: $llamaState.repeatPenalty, in: 1.0...1.5, step: 0.05)
+                    }
+                } header: {
+                    Text("Generation")
+                } footer: {
+                    Text("Temperature 0 uses greedy decoding. Higher values increase variation. Top P/Top K limit candidate tokens; repeat penalty reduces loops.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
                 // MARK: - Legal Section
                 Section {
                     Link(destination: URL(string: "https://github.com/stevederico/silo")!) {

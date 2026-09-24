@@ -2,11 +2,11 @@ name: Publish Mercan Identity E2 Q4
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - refactor/libmercan-ios-runtime
-    paths:
-      - '.github/workflows/publish-identity-e2-q4.yml'
+    inputs:
+      model_url:
+        description: Direct URL to the verified E2 Q4 .mercan artifact
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -18,14 +18,14 @@ jobs:
     env:
       TAG: mercan-0.8b-identity-e2-q4-20260924
       ASSET: Mercan-0.8B-Identity-E2-Q4_K_M.mercan
-      HF_MODEL_URL: https://huggingface.co/MercanAI/Mercan-0.8B-SFT/resolve/main/model.mercan?download=true
+      MODEL_URL: ${{ inputs.model_url }}
 
     steps:
       - name: Download Q4 Mercan artifact
         run: |
           set -euo pipefail
           curl -fL --retry 5 --retry-delay 3 \
-            -o "$ASSET" "$HF_MODEL_URL"
+            -o "$ASSET" "$MODEL_URL"
           ls -lh "$ASSET"
 
       - name: Verify format and checkpoint provenance
@@ -87,7 +87,7 @@ jobs:
           Source checkpoint: epoch_02_step_00046.pt
           Quantization: Q4_K_M
           Container: Mercan v1 / GGUF v3
-          Source artifact: MercanAI/Mercan-0.8B-SFT:model.mercan
+          Source artifact URL: ${{ inputs.model_url }}
           Runtime branch: refactor/libmercan-ios-runtime
           Stop protocol: 32001=<|im_end|>, 2=<EOS>, 32000=<|im_start|>
           Chat roles: sistem, kullanici, asistan

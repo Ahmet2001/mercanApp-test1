@@ -52,16 +52,19 @@ actor WebSearchService {
 
     static func augmentedSystemPrompt(base: String) -> String {
         let trimmed = base.trimmingCharacters(in: .whitespacesAndNewlines)
-        let foundation = trimmed.isEmpty
-            ? "Sen yardımsever bir Türkçe yapay zeka asistanısın. Kullanıcının sorularına doğru, net ve faydalı yanıtlar veriyorsun."
-            : trimmed
+        let learnedInstruction = """
+        Tek bir araca erişimi olan yardımcı bir asistansın: web_search.
+        Kullanıcının sorusu emin olmadığın bilgiler ya da yakın zamanda değişmiş olabilecek bilgiler gerektiriyorsa, tahmin etmek yerine web_search çağır. Sorguyu her seferinde biraz daha netleştirerek aracı birden çok kez çağırabilirsin.
+        Yeterli kanıtın olduğunda, arama sonuçlarına dayanarak doğrudan ve kısa yanıt ver.
+        """
 
-        return foundation + """
+        let systemText = trimmed.isEmpty
+            ? learnedInstruction
+            : trimmed + "\n\n" + learnedInstruction
 
-        Emin olmadığın ya da yakın zamanda değişmiş olabilecek bilgiler için tahmin etmek yerine web_search aracını kullan. Gerekirse sorguyu netleştirerek aracı birden çok kez çağırabilirsin. Yeterli kanıtın olduğunda arama sonuçlarına dayanarak doğrudan yanıt ver.
-
-        Kullanılabilir araçlar:
-        """ + toolSchemaJSON
+        return systemText.trimmingCharacters(in: .whitespacesAndNewlines)
+            + "\n\nKullanılabilir araçlar:\n"
+            + toolSchemaJSON
     }
 
     static func parseToolCalls(from text: String) -> [WebSearchToolCall]? {
@@ -103,7 +106,7 @@ actor WebSearchService {
         return canonicalPrefix.hasPrefix(value) || value.hasPrefix(canonicalPrefix)
     }
 
-    func search(query: String, maxResults: Int = 5) async throws -> [WebSearchResult] {
+    func search(query: String, maxResults: Int = 10) async throws -> [WebSearchResult] {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { throw WebSearchServiceError.invalidQuery }
 
@@ -122,32 +125,21 @@ actor WebSearchService {
         callID: String,
         results: [WebSearchResult]
     ) -> String {
-        let quote = String(UnicodeScalar(34)!)
-        let escapedCallID = callID
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: quote, with: "\\\"")
-        var lines = [
-            #"<tool_result {"name":"web_search","tool_call_id":""# + escapedCallID + #"">"#
-        ]
-
-        if results.isEmpty {
-            lines.append("'\(query)' için arama sonucu bulunamadı.")
-        } else {
-            for (index, result) in results.enumerated() {
-                lines.append("[\(index + 1)] \(result.url)")
-                if !result.title.isEmpty {
-                    lines.append(result.title)
-                }
-                if !result.snippet.isEmpty {
-                    lines.append(result.snippet)
-                }
-                if index + 1 < results.count {
-                    lines.append("")
-                }
-            }
+        guard !results.isEmpty else {
+            return "'\(query)' için arama sonucu bulunamadı."
         }
 
-        lines.append("</tool_result>")
+        var lines: [String] = []
+        for (index, result) in results.enumerated() {
+            lines.append("[\(index + 1)] \(result.url)")
+            let evidence = result.snippet.isEmpty ? result.title : result.snippet
+            if !evidence.isEmpty {
+                lines.append(String(evidence.prefix(900)))
+            }
+            if index + 1 < results.count {
+                lines.append("")
+            }
+        }
         return lines.joined(separator: "\n")
     }
 

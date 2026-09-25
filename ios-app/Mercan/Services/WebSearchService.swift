@@ -122,9 +122,10 @@ actor WebSearchService {
         callID: String,
         results: [WebSearchResult]
     ) -> String {
+        let quote = String(UnicodeScalar(34)!)
         let escapedCallID = callID
             .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: """, with: "\\"")
+            .replacingOccurrences(of: quote, with: "\\\"")
         var lines = [
             #"<tool_result {"name":"web_search","tool_call_id":""# + escapedCallID + #"">"#
         ]
@@ -333,9 +334,10 @@ actor WebSearchService {
     }
 
     private func decodeEntities(_ raw: String) -> String {
-        raw
+        let quote = String(UnicodeScalar(34)!)
+        return raw
             .replacingOccurrences(of: "&amp;", with: "&")
-            .replacingOccurrences(of: "&quot;", with: """)
+            .replacingOccurrences(of: "&quot;", with: quote)
             .replacingOccurrences(of: "&#39;", with: "'")
             .replacingOccurrences(of: "&#x27;", with: "'")
             .replacingOccurrences(of: "&lt;", with: "<")

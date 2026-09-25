@@ -323,6 +323,8 @@ actor MercanRuntimeContext {
             return "kullanici"
         case "assistant", "asistan":
             return "asistan"
+        case "tool", "araç", "arac":
+            return "araç"
         default:
             return role
         }

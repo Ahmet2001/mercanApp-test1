@@ -75,6 +75,16 @@ struct SettingsView: View {
                     GenerationSlider(title: "Repeat penalty", value: $llamaState.repeatPenalty, range: 1.0...1.5, step: 0.05)
                 }
 
+                Section("Web") {
+                    Toggle(isOn: $llamaState.webSearchEnabled) {
+                        Label("Web Search", systemImage: "globe")
+                    }
+
+                    Text("Mercan may call its learned web_search tool for current or uncertain information. Search results are returned to the local model as context.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("System prompt") {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack {

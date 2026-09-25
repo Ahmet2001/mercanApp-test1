@@ -1164,6 +1164,125 @@ class LlamaState: ObservableObject {
         }
     }
 
+    private func startAssistantGeneration(
+        using inferenceEngine: InferenceEngine,
+        messages: [(role: String, content: String)]
+    ) async throws {
+        await inferenceEngine.setSampling(samplingConfiguration)
+        do {
+            try await inferenceEngine.generateNext(messages: messages)
+        } catch {
+            guard case LlamaError.decodeFailed(_) = error else { throw error }
+            await inferenceEngine.clear()
+            try await inferenceEngine.generateNext(messages: messages)
+        }
+    }
+
+    private func generateBufferedAssistantTurn(
+        using inferenceEngine: InferenceEngine,
+        messages: [(role: String, content: String)]
+    ) async throws -> String {
+        try await startAssistantGeneration(using: inferenceEngine, messages: messages)
+        var parts: [String] = []
+
+        while await !inferenceEngine.isComplete && !isStopped {
+            if let token = try await inferenceEngine.streamToken() {
+                generatedTokenCount += 1
+                parts.append(token)
+            }
+        }
+
+        if !isStopped {
+            await inferenceEngine.clearGenerationState()
+        }
+        return parts.joined()
+    }
+
+    private func cleanedAssistantDisplay(_ raw: String) -> String {
+        let filter = SpecialTokenFilter()
+        let stripper = ThinkTagStripper()
+        let filtered = filter.process(raw) + filter.flush()
+        return (stripper.process(filtered) + stripper.flush())
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func toolAwareAssistantResponse(
+        using inferenceEngine: InferenceEngine,
+        messages initialMessages: [(role: String, content: String)]
+    ) async throws -> String {
+        var inferenceMessages = initialMessages
+        let maximumToolRounds = 3
+        var toolRound = 0
+
+        while true {
+            let assistantTurn = try await generateBufferedAssistantTurn(
+                using: inferenceEngine,
+                messages: inferenceMessages
+            )
+            if isStopped { return "" }
+
+            guard webSearchEnabled,
+                  let calls = WebSearchService.parseToolCalls(from: assistantTurn),
+                  !calls.isEmpty
+            else {
+                return assistantTurn
+            }
+
+            guard toolRound < maximumToolRounds else {
+                throw WebSearchServiceError.invalidResponse
+            }
+
+            // Preserve the model's exact canonical JSON call as the assistant
+            // message. Training then places one or more raw web result bodies in
+            // consecutive "araç" messages.
+            inferenceMessages.append((role: "assistant", content: assistantTurn))
+
+            currentResponse = String(localized: "Searching the web…")
+            isThinking = false
+
+            for (index, call) in calls.enumerated() {
+                if isStopped { return "" }
+                let query = call.arguments.query.trimmingCharacters(in: .whitespacesAndNewlines)
+                let fallbackID = "call_\(toolRound + 1)_\(index + 1)"
+                let callID = call.id?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let resolvedCallID = (callID?.isEmpty == false) ? callID! : fallbackID
+
+                let results: [WebSearchResult]
+                do {
+                    results = try await webSearchService.search(query: query, maxResults: 5)
+                } catch {
+                    results = []
+                }
+
+                let toolBody = WebSearchService.trainingStyleToolResult(
+                    query: query,
+                    callID: resolvedCallID,
+                    results: results
+                )
+                inferenceMessages.append((role: "tool", content: toolBody))
+            }
+
+            toolRound += 1
+            currentResponse = ""
+            isThinking = true
+
+            // Keep room for another tool call / final answer. Older conversation
+            // turns are expendable; the current user request and fresh tool
+            // evidence are kept at the end of the prompt.
+            let toolBudget = Int(Double(contextSize) * 0.88)
+            var tokenCount = await inferenceEngine.countTokens(for: inferenceMessages)
+            while tokenCount > toolBudget && inferenceMessages.count > 4 {
+                let removeIndex = (inferenceMessages.first?.role == "system") ? 1 : 0
+                // Never remove the current assistant tool call or its tool results.
+                if removeIndex >= max(0, inferenceMessages.count - (calls.count + 2)) {
+                    break
+                }
+                inferenceMessages.remove(at: removeIndex)
+                tokenCount = await inferenceEngine.countTokens(for: inferenceMessages)
+            }
+        }
+    }
+
     func complete(text: String) async {
         guard !isGenerating else { return }
         if modelSuspendedForSpeech {
@@ -1216,7 +1335,12 @@ class LlamaState: ObservableObject {
         do {
             // Build full conversation history for multi-turn
             var chatMessages: [(role: String, content: String)] = []
-            if !systemPrompt.isEmpty {
+            if webSearchEnabled {
+                chatMessages.append((
+                    role: "system",
+                    content: WebSearchService.augmentedSystemPrompt(base: systemPrompt)
+                ))
+            } else if !systemPrompt.isEmpty {
                 chatMessages.append((role: "system", content: systemPrompt))
             }
             await appendTranscriptContext(to: &chatMessages)
@@ -1226,7 +1350,8 @@ class LlamaState: ObservableObject {
             }
 
             // Context overflow handling
-            let budget = Int(Double(contextSize) * 0.95)
+            let budgetFraction = webSearchEnabled ? 0.72 : 0.95
+            let budget = Int(Double(contextSize) * budgetFraction)
             var currentTokenCount = await inferenceEngine.countTokens(for: chatMessages)
             lastPromptTokenCount = currentTokenCount
             contextTokenCount = currentTokenCount
@@ -1264,101 +1389,43 @@ class LlamaState: ObservableObject {
                 return
             }
 
-            await inferenceEngine.setSampling(samplingConfiguration)
-            do {
-                try await inferenceEngine.generateNext(messages: chatMessages)
-            } catch {
-                guard case LlamaError.decodeFailed(_) = error else { throw error }
-                await inferenceEngine.clear()
-                try await inferenceEngine.generateNext(messages: chatMessages)
-            }
+            let savedRaw = try await toolAwareAssistantResponse(
+                using: inferenceEngine,
+                messages: chatMessages
+            )
 
-            while await !inferenceEngine.isComplete && !isStopped {
-                let token: String?
-                do {
-                    token = try await inferenceEngine.streamToken()
-                } catch {
-                    await MainActor.run {
-                        self.finalizeGenerationStats()
-                        self.currentResponse = "Error: Inference failed (\(error.localizedDescription))"
-                        let errorMessage = ChatMessage(content: self.currentResponse, isUser: false, timestamp: Date())
-                        self.messages.append(errorMessage)
-                        self.currentResponse = ""
-                        self.isThinking = false
-                        self.isGenerating = false
-                        self.saveCurrentConversation()
-                    }
-                    return
-                }
-                if let token {
-                    generatedTokenCount += 1
-                    rawResponseParts.append(token)
-                    let filtered = tokenFilter.process(token)
-                    if !filtered.isEmpty {
-                        let display = thinkStripper.process(filtered)
-                        if !display.isEmpty {
-                            displayParts.append(display)
-                            displayPartsSinceLastFlush += 1
-                            // First token: update immediately to clear isThinking
-                            // After that: batch every 10 tokens to avoid per-token String copies
-                            let needsImmediateUpdate = self.isThinking
-                            if needsImmediateUpdate || displayPartsSinceLastFlush >= 10 {
-                                let snapshot = displayParts.joined()
-                                displayPartsSinceLastFlush = 0
-                                // Read entropy for confidence indicator
-                                var confidence: Float = 1.0
-                                if let mercanEngine = inferenceEngine as? MercanRuntimeEngine {
-                                    let avg = await mercanEngine.averageEntropy
-                                    // Map entropy to 0-1 confidence (lower entropy = higher confidence)
-                                    // Typical entropy range: 0-12 bits for 32K vocab
-                                    confidence = max(0, min(1, 1.0 - (avg / 12.0)))
-                                }
-                                await MainActor.run {
-                                    if self.isThinking {
-                                        self.isThinking = false
-                                    }
-                                    self.currentResponse = snapshot
-                                    self.modelConfidence = confidence
-                                    self.speechSynthesizer.feed(
-                                        displayText: snapshot,
-                                        enabled: self.speakRepliesEnabled
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // If stopped, stop() already saved the message — skip flush/append
+            // stop() already updates generation/UI state.
             if isStopped { return }
 
-            // Flush remaining buffered content
-            let filterFlush = tokenFilter.flush()
-            rawResponseParts.append(filterFlush)
-            let displayFlush = thinkStripper.process(filterFlush) + thinkStripper.flush()
-            if !displayFlush.isEmpty {
-                displayParts.append(displayFlush)
+            let finalDisplay = cleanedAssistantDisplay(savedRaw)
+            rawResponse = savedRaw
+            rawResponseParts = [savedRaw]
+            displayParts = finalDisplay.isEmpty ? [] : [finalDisplay]
+
+            var confidence: Float = 1.0
+            if let mercanEngine = inferenceEngine as? MercanRuntimeEngine {
+                let avg = await mercanEngine.averageEntropy
+                confidence = max(0, min(1, 1.0 - (avg / 12.0)))
             }
-
-            // Keep KV cache for prefix reuse on next turn
-            await inferenceEngine.clearGenerationState()
-
-            rawResponse = rawResponseParts.joined()
-            let savedRaw = rawResponse
-            let finalDisplay = displayParts.joined()
 
             await MainActor.run {
                 self.currentResponse = finalDisplay
-                // Store raw content (with think tags) for accurate multi-turn history
-                let aiMessage = ChatMessage(content: savedRaw, isUser: false, timestamp: Date())
-                self.messages.append(aiMessage)
+                self.modelConfidence = confidence
+
+                if !savedRaw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let aiMessage = ChatMessage(content: savedRaw, isUser: false, timestamp: Date())
+                    self.messages.append(aiMessage)
+                }
+
+                if !finalDisplay.isEmpty {
+                    self.speechSynthesizer.feed(
+                        displayText: finalDisplay,
+                        enabled: self.speakRepliesEnabled
+                    )
+                }
                 self.currentResponse = ""
                 self.speechSynthesizer.finish(enabled: self.speakRepliesEnabled)
                 self.saveCurrentConversation()
-            }
-
-            await MainActor.run {
                 self.isThinking = false
                 self.isGenerating = false
                 self.finalizeGenerationStats()

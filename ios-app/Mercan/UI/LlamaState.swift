@@ -281,6 +281,9 @@ class LlamaState: ObservableObject {
     @Published var systemPrompt: String {
         didSet { UserDefaults.standard.set(systemPrompt, forKey: "systemPrompt") }
     }
+    @Published var webSearchEnabled: Bool {
+        didSet { UserDefaults.standard.set(webSearchEnabled, forKey: "webSearchEnabled") }
+    }
     @Published var cacheCleared = false
     @Published var contextTruncated = false
     @Published var isThinking = false
@@ -347,6 +350,7 @@ class LlamaState: ObservableObject {
     }
 
     let speechSynthesizer = SpeechSynthesizerService()
+    private let webSearchService = WebSearchService()
     private var suspendedModelURL: URL?
 
     // Whisper models (reused download system)
@@ -668,6 +672,9 @@ class LlamaState: ObservableObject {
 
     init() {
         self.systemPrompt = UserDefaults.standard.string(forKey: "systemPrompt") ?? ""
+        self.webSearchEnabled = UserDefaults.standard.object(forKey: "webSearchEnabled") == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: "webSearchEnabled")
         self.speakRepliesEnabled = UserDefaults.standard.bool(forKey: "speakRepliesEnabled")
         if UserDefaults.standard.object(forKey: "temperature") != nil {
             self.temperature = UserDefaults.standard.double(forKey: "temperature")
@@ -1072,7 +1079,12 @@ class LlamaState: ObservableObject {
 
     private func chatMessagesForInference() async -> [(role: String, content: String)] {
         var chatMessages: [(role: String, content: String)] = []
-        if !systemPrompt.isEmpty {
+        if webSearchEnabled {
+            chatMessages.append((
+                role: "system",
+                content: WebSearchService.augmentedSystemPrompt(base: systemPrompt)
+            ))
+        } else if !systemPrompt.isEmpty {
             chatMessages.append((role: "system", content: systemPrompt))
         }
         await appendTranscriptContext(to: &chatMessages)
